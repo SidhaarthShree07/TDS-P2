@@ -593,6 +593,7 @@ async def analyze_data(request: Request):
                     data_file = val
 
         if not questions_file:
+            logger.error("Missing questions file (.txt)")
             raise HTTPException(400, "Missing questions file (.txt)")
 
         raw_questions = (await questions_file.read()).decode("utf-8")
@@ -726,6 +727,7 @@ async def analyze_data(request: Request):
                 result = exec_result.get("result", {})
                 return JSONResponse(content=result)
             else:
+                logger.error(f"Unsupported data file type: {filename}")
                 raise HTTPException(400, f"Unsupported data file type: {filename}")
             # Pickle for injection
             temp_pkl = tempfile.NamedTemporaryFile(suffix=".pkl", delete=False)
@@ -766,6 +768,8 @@ async def analyze_data(request: Request):
             f"{df_preview if df_preview else ''}"
             "Respond with the JSON object only."
         )
+        logger.info(f"Prompt sent to agent:\n{llm_input}")
+
         if is_image_upload == False:
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as ex:
@@ -773,9 +777,13 @@ async def analyze_data(request: Request):
                 try:
                     result = fut.result(timeout=LLM_TIMEOUT_SECONDS)
                 except concurrent.futures.TimeoutError:
+                    logger.error("Processing timeout in agent execution")
                     raise HTTPException(408, "Processing timeout")
-    
+
+            logger.info(f"Agent result: {result}")
+
             if "error" in result:
+                logger.error(f"Agent returned error: {result['error']}")
                 raise HTTPException(500, detail=result["error"])
     
             # Post-process key mapping & type casting (robust, generic, with index fallback)
@@ -791,6 +799,7 @@ async def analyze_data(request: Request):
                         try:
                             mapped[key] = caster(val) if val not in (None, "") else val
                         except Exception:
+                            logger.warning(f"Type casting failed for key {key} with value {val}")
                             mapped[key] = val
                     result = mapped
                 # If result is a dict and lengths match, map by index (fallback)
@@ -804,6 +813,7 @@ async def analyze_data(request: Request):
                         try:
                             mapped[key] = caster(val) if val not in (None, "") else val
                         except Exception:
+                            logger.warning(f"Type casting failed for key {key} with value {val}")
                             mapped[key] = val
                     result = mapped
                 # If result is a list and length matches, map by index
@@ -816,13 +826,16 @@ async def analyze_data(request: Request):
                         try:
                             mapped[key] = caster(val) if val not in (None, "") else val
                         except Exception:
+                            logger.warning(f"Type casting failed for key {key} with value {val}")
                             mapped[key] = val
                     result = mapped
                 # Otherwise, do not map, just return the raw result (prevents all 'Answer not found')
-    
+
+            logger.info(f"Final result returned: {result}")
             return JSONResponse(content=result)
 
     except HTTPException as he:
+        logger.error(f"HTTPException: {he.detail}")
         raise he
     except Exception as e:
         logger.exception("analyze_data failed")
