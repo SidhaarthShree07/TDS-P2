@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>TDS Data Analyst Agent</title>
+    <!-- Use a consistent, sleek font family -->
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Roboto:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        /*
+        * Global Variables & Reset
+        * Define a cohesive color palette and reset default styles for consistency.
+        */
+        :root {
+            --c1: #0a0a0a; /* Deep Charcoal/Black */
+            --c2: #1c1c1e; /* Dark Grey */
+            --c3: #3f3f44; /* Muted Grey */
+            --c4: #5bc0be; /* Aqua */
+            --c5: #6fffe9; /* Brightest Aqua */
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        /* Body & Layout */
+        body {
+            font-family: 'Orbitron', 'Roboto', Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--c5);
+            background: linear-gradient(135deg, var(--c1) 0%, var(--c2) 100%);
+            min-height: 100vh;
+            position: relative;
+            overflow-x: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* Header Section */
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            color: var(--c5);
+        }
+        .header h1 {
+            font-size: clamp(2rem, 5vw, 2.8rem);
+            margin-bottom: 10px;
+            text-shadow: 0 4px 32px var(--c4), 0 1px 0 #222;
+            letter-spacing: 2px;
+            font-family: 'Orbitron', sans-serif;
+        }
+        .header p {
+            font-size: clamp(1rem, 2vw, 1.13rem);
+            opacity: 0.92;
+            font-family: 'Roboto', sans-serif;
+        }
+
+        /* Main Card - Glassmorphism Effect */
+        .main-card {
+            background: rgba(255, 255, 255, 0.05); /* Lighter, more subtle glass */
+            border-radius: 24px;
+            box-shadow: 0 8px 32px 0 rgba(91, 192, 190, 0.08); /* Reduced shadow intensity */
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1.5px solid rgba(255, 255, 255, 0.1);
+            padding: 38px 34px;
+            margin-bottom: 30px;
+            transition: box-shadow 0.3s, border 0.3s, transform 0.3s;
+            will-change: box-shadow, border, transform;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 18px;
+        }
+        .main-card:hover {
+            box-shadow: 0 16px 48px 0 var(--c4), 0 2px 0 var(--c5);
+            border: 2.5px solid var(--c5);
+            transform: translateY(-4px); /* Subtle lift on hover */
+        }
+        
+        /* New container for side-by-side input fields */
+        .input-container {
+            display: flex;
+            width: 100%;
+            gap: 20px;
+        }
+
+        /* Form Elements */
+        .form-group {
+            width: 100%;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 700;
+            color: var(--c5);
+            letter-spacing: 1px;
+            font-family: 'Roboto', sans-serif;
+        }
+        .file-input {
+            width: 320px; /* Constant width */
+            height: 120px; /* Constant height */
+            padding: 20px;
+            border: 2.5px dashed var(--c4);
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.08);
+            cursor: pointer;
+            transition: 0.3s ease;
+            text-align: center;
+            position: relative;
+            color: var(--c5);
+            font-size: 1.09rem;
+            box-shadow: 0 2px 12px rgba(91,192,190,0.1);
+            outline: none;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center; /* Center content vertically */
+            gap: 8px;
+        }
+        .file-input input[type="file"] {
+            opacity: 0;
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+            z-index: 2;
+        }
+        .file-input span {
+            z-index: 1;
+            pointer-events: none;
+            font-size: 1.08rem;
+            color: var(--c4);
+            font-family: 'Roboto', sans-serif;
+            font-weight: 500;
+            letter-spacing: 0.5px;
+        }
+        .file-input.has-file {
+            border-color: var(--c5);
+            background: rgba(91, 192, 190, 0.15);
+            box-shadow: 0 4px 20px var(--c5);
+        }
+        .file-input:hover, .file-input:focus-within {
+            border-color: var(--c5);
+            background: rgba(91, 192, 190, 0.10);
+            color: var(--c5);
+        }
+        .file-info {
+            margin-top: 10px;
+            padding: 10px;
+            background: rgba(91, 192, 190, 0.10);
+            border-radius: 8px;
+            font-size: 15px;
+            color: var(--c5);
+            display: none;
+        }
+        
+        /* Buttons */
+        .btn {
+            background: linear-gradient(135deg, var(--c4) 0%, var(--c5) 100%);
+            color: var(--c1);
+            border: none;
+            padding: 16px 32px;
+            border-radius: 14px;
+            font-size: 17px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: 0.3s ease;
+            width: 100%;
+            font-family: 'Orbitron', sans-serif;
+            box-shadow: 0 4px 16px var(--c4);
+            letter-spacing: 1px;
+        }
+        .btn:hover {
+            transform: translateY(-2px) scale(1.01);
+            box-shadow: 0 8px 24px var(--c5);
+            background: linear-gradient(135deg, var(--c5) 0%, var(--c4) 100%);
+        }
+        .btn:disabled {
+            background: #555;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+            opacity: 0.6;
+        }
+        .btn-secondary {
+            background: var(--c2);
+            color: var(--c5);
+            box-shadow: 0 4px 16px var(--c2);
+        }
+        .btn-secondary:hover {
+            transform: translateY(-2px) scale(1.01);
+            box-shadow: 0 8px 24px var(--c5);
+            background: var(--c3);
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+            flex-wrap: wrap;
+        }
+
+        /* Loading Spinner */
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: var(--c4);
+        }
+        .spinner {
+            border: 4px solid var(--c4);
+            border-top: 4px solid var(--c5);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s cubic-bezier(0.68, -0.55, 0.27, 1.55) infinite, glow 1.5s ease-in-out infinite;
+            margin: 0 auto 15px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        @keyframes glow {
+            0%, 100% { box-shadow: 0 0 8px var(--c4), 0 0 16px var(--c5); }
+            50% { box-shadow: 0 0 20px var(--c4), 0 0 32px var(--c5); }
+        }
+
+        /* Results Section */
+        .results {
+            display: none;
+            margin-top: 30px;
+        }
+        .results h3 {
+            font-size: 1.5rem;
+            margin-bottom: 20px;
+            color: var(--c5);
+            text-shadow: 0 2px 8px var(--c4);
+            text-align: center;
+            font-family: 'Orbitron', sans-serif;
+            letter-spacing: 1px;
+        }
+        .result-item {
+            background: rgba(255, 255, 255, 0.05);
+            border-left: 4px solid var(--c5);
+            padding: 24px;
+            margin-bottom: 22px;
+            border-radius: 0 16px 16px 0;
+            box-shadow: 0 2px 8px rgba(91,192,190,0.1);
+            transition: box-shadow 0.3s;
+        }
+        .result-item:hover {
+            box-shadow: 0 4px 16px var(--c5);
+        }
+        .question {
+            font-weight: 700;
+            color: var(--c5);
+            margin-bottom: 15px;
+            font-size: 1.13rem;
+            font-family: 'Orbitron', sans-serif;
+            letter-spacing: 1px;
+        }
+        .answer {
+            color: var(--c4);
+            line-height: 1.7;
+            font-family: 'Roboto', sans-serif;
+        }
+        .answer pre {
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--c5);
+            border-radius: 8px;
+            padding: 15px;
+            font-size: 1.01rem;
+            white-space: pre-wrap; /* Ensures text wraps within the block */
+            overflow: auto;
+        }
+        .answer img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 12px;
+            margin: 10px 0;
+            box-shadow: 0 4px 16px var(--c4);
+            cursor: pointer;
+            transition: transform 0.3s ease;
+        }
+        .answer img:hover {
+            transform: scale(1.04);
+        }
+        .error {
+            background: rgba(220, 53, 69, 0.13);
+            border-left-color: #dc3545;
+            color: #ffb3b3;
+        }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(11, 19, 43, 0.97);
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            transition: opacity 0.3s;
+        }
+        .modal-content {
+            margin: auto;
+            display: block;
+            width: 80%;
+            max-width: 700px;
+            max-height: 80%;
+            object-fit: contain;
+        }
+        .close {
+            position: absolute;
+            top: 15px;
+            right: 35px;
+            color: var(--c5);
+            font-size: 40px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: color 0.3s;
+        }
+        .close:hover {
+            color: var(--c4);
+        }
+
+        /* Footer */
+        .footer {
+            width: 100%;
+            text-align: center;
+            padding: 18px 0 10px 0;
+            font-size: 1.05rem;
+            color: var(--c5);
+            background: rgba(255, 255, 255, 0.05);
+            border-top: 1.5px solid rgba(255, 255, 255, 0.1);
+            font-family: 'Orbitron', sans-serif;
+            letter-spacing: 1px;
+            position: fixed;
+            left: 0;
+            bottom: 0;
+            z-index: 100;
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            box-shadow: 0 -2px 12px var(--c4);
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+            }
+            .header h1 {
+                font-size: 2rem;
+            }
+            .main-card {
+                padding: 20px;
+            }
+            .button-group {
+                flex-direction: column;
+            }
+            .btn-secondary {
+                width: 100%;
+            }
+            .input-container {
+                flex-direction: column; /* Stack inputs on small screens */
+            }
+            .file-input {
+                width: 100%; /* Make it fluid on small screens */
+                height: auto;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>TDS Data Analyst Agent</h1>
+            <p>Upload your questions file and optional dataset to get intelligent answers with visualizations</p>
+        </div>
+
+        <div class="main-card">
+            <form id="analysisForm">
+                <div class="input-container">
+                    <!-- Questions file (REQUIRED) -->
+                    <div class="form-group">
+                        <label for="questions_file">Questions File (.txt) <span style="color:#dc3545">*</span></label>
+                        <div class="file-input-wrapper">
+                            <div class="file-input" id="questionsDrop">
+                                <input type="file" id="questions_file" name="questions_file" accept=".txt"/>
+                                <span>Choose your questions (.txt)</span>
+                            </div>
+                        </div>
+                        <div id="questionsInfo" class="file-info"></div>
+                    </div>
+
+                    <!-- Dataset file (OPTIONAL) -->
+                    <div class="form-group">
+                        <label for="data_file">Upload Dataset (Optional)</label>
+                        <div class="file-input-wrapper">
+                            <div class="file-input" id="dataDrop">
+                                <input type="file" id="data_file" name="data_file" accept=".csv,.xlsx,.xls,.json,.parquet,.txt"/>
+                                <span>Choose or drag & drop your dataset</span>
+                            </div>
+                        </div>
+                        <div id="dataInfo" class="file-info"></div>
+                    </div>
+                </div>
+
+                <div class="button-group">
+                    <button type="submit" class="btn" id="submitBtn">Analyze Data</button>
+                    <button type="button" class="btn btn-secondary" id="clearBtn">Clear</button>
+                </div>
+            </form>
+
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p>Analyzing your data... This may take a few moments.</p>
+            </div>
+
+            <div class="results" id="results">
+                <h3>Analysis Results</h3>
+                <div id="resultsContent"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Image Modal -->
+    <div id="imageModal" class="modal">
+        <span class="close">&times;</span>
+        <img class="modal-content" id="modalImage" alt="Visualization"/>
+    </div>
+
+    <script>
+        /*
+         * NOTE: The following JavaScript code has been preserved as per your request
+         * to maintain the backend/frontend integration. No changes were made to
+         * the core logic or API calls.
+         */
+
+        /* ---------- Image normalization helpers ---------- */
+        function normalizeImageData(answer) {
+            let s = null;
+            if (typeof answer === 'string') { s = answer.trim(); }
+            else if (answer && typeof answer === 'object') {
+                s = answer.image || answer.base64 || answer.plot || answer.data || null;
+                if (typeof s === 'string') s = s.trim();
+            }
+            if (!s) return null;
+
+            s = s.replace(/^data:aimage\//i, 'data:image/');
+
+            if (/^data:image\//i.test(s)) return s;
+
+            const base64Like = /^[A-Za-z0-9+/=\r\n]+$/.test(s) && s.length > 200 && !/\s{2,}/.test(s);
+            if (base64Like) return 'data:image/png;base64,' + s;
+
+            return null;
+        }
+
+        function renderAnswerInto(answer, container, onImageClick) {
+            const maybeImg = normalizeImageData(answer);
+            if (maybeImg) {
+                const img = document.createElement('img');
+                img.src = maybeImg;
+                img.alt = 'Generated visualization';
+                img.addEventListener('click', () => onImageClick(maybeImg));
+                container.appendChild(img);
+                return;
+            }
+            const text = (answer && typeof answer === 'object') ? JSON.stringify(answer, null, 2) : String(answer ?? '');
+            if (text.includes('\n') || text.length > 120) {
+                const pre = document.createElement('pre');
+                pre.style.whiteSpace = 'pre-wrap';
+                pre.style.background = '#f8f9fa';
+                pre.style.padding = '15px';
+                pre.style.borderRadius = '5px';
+                pre.style.overflow = 'auto';
+                pre.textContent = text;
+                container.appendChild(pre);
+            } else {
+                container.textContent = text;
+            }
+        }
+
+        /* ---------------- App ---------------- */
+        class DataAnalystApp {
+            constructor() {
+                this.form = document.getElementById('analysisForm');
+                this.qFileInput = document.getElementById('questions_file');
+                this.dFileInput = document.getElementById('data_file');
+                this.qDrop = document.getElementById('questionsDrop');
+                this.dDrop = document.getElementById('dataDrop');
+                this.qInfo = document.getElementById('questionsInfo');
+                this.dInfo = document.getElementById('dataInfo');
+                this.submitBtn = document.getElementById('submitBtn');
+                this.clearBtn = document.getElementById('clearBtn');
+                this.loading = document.getElementById('loading');
+                this.results = document.getElementById('results');
+                this.resultsContent = document.getElementById('resultsContent');
+                this.modal = document.getElementById('imageModal');
+                this.modalImage = document.getElementById('modalImage');
+                this.closeModal = document.querySelector('.close');
+                this.initEventListeners();
+            }
+
+            initEventListeners() {
+                this.form.addEventListener('submit', (e) => this.handleSubmit(e));
+                this.clearBtn.addEventListener('click', () => this.clearForm());
+                this.qFileInput.addEventListener('change', (e) => this.handleFileSelect(e, 'q'));
+                this.dFileInput.addEventListener('change', (e) => this.handleFileSelect(e, 'd'));
+                this.closeModal.addEventListener('click', () => this.hideImageModal());
+                this.modal.addEventListener('click', (e) => { if (e.target === this.modal) this.hideImageModal(); });
+                this.setupDrop(this.dDrop, (files) => { if (files && files.length > 0) { this.dFileInput.files = files; this.handleFileSelect({ target: { files } }, 'd'); } });
+                this.setupDrop(this.qDrop, (files) => { if (files && files.length > 0) { this.qFileInput.files = files; this.handleFileSelect({ target: { files } }, 'q'); } });
+            }
+
+            setupDrop(zone, onDropFiles) {
+                zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('has-file'); });
+                zone.addEventListener('dragleave', (e) => { e.preventDefault(); zone.classList.remove('has-file'); });
+                zone.addEventListener('drop', (e) => { e.preventDefault(); zone.classList.remove('has-file'); onDropFiles(e.dataTransfer.files); });
+            }
+
+            handleFileSelect(event, type) {
+                const file = event.target.files[0];
+                if (type === 'q') {
+                    if (file) {
+                        this.qInfo.innerHTML = `<strong>Questions:</strong> ${file.name} (${(file.size / 1024).toFixed(2)} KB)`;
+                        this.qInfo.style.display = 'block';
+                        this.qDrop.classList.add('has-file');
+                        this.qDrop.querySelector('span').textContent = 'File selected: ' + file.name;
+                    } else {
+                        this.qInfo.style.display = 'none';
+                        this.qDrop.classList.remove('has-file');
+                        this.qDrop.querySelector('span').textContent = 'Choose your questions (.txt)';
+                    }
+                } else {
+                    if (file) {
+                        this.dInfo.innerHTML = `<strong>Dataset:</strong> ${file.name} (${(file.size / 1024).toFixed(2)} KB)`;
+                        this.dInfo.style.display = 'block';
+                        this.dDrop.classList.add('has-file');
+                        this.dDrop.querySelector('span').textContent = 'File selected: ' + file.name;
+                    } else {
+                        this.dInfo.style.display = 'none';
+                        this.dDrop.classList.remove('has-file');
+                        this.dDrop.querySelector('span').textContent = 'Choose or drag & drop your dataset';
+                    }
+                }
+            }
+
+            async handleSubmit(event) {
+                event.preventDefault();
+                if (!this.qFileInput.files[0]) {
+                    // Use a custom modal or message box instead of alert()
+                    const message = 'Please upload your questions .txt file.';
+                    console.error(message);
+                    this.displayError(message);
+                    return;
+                }
+                this.showLoading();
+                this.hideResults();
+
+                try {
+                    const formData = new FormData();
+                    formData.append('questions_file', this.qFileInput.files[0]);
+                    if (this.dFileInput.files[0]) formData.append('data_file', this.dFileInput.files[0]);
+
+                    const response = await fetch('/api', { method: 'POST', body: formData }); // changed endpoint
+
+                    if (!response.ok) {
+                        let msg = `HTTP ${response.status}`;
+                        try { const err = await response.json(); if (err && err.detail) msg = err.detail; } catch (e) {}
+                        throw new Error(msg);
+                    }
+
+                    const data = await response.json();
+                    this.displayResults(data);
+                } catch (err) {
+                    console.error('Analysis failed:', err);
+                    this.displayError(err.message || 'Unknown error');
+                } finally {
+                    this.hideLoading();
+                }
+            }
+
+            displayResults(data) {
+                this.resultsContent.innerHTML = '';
+                if (data.error) {
+                    this.displayError(data.error);
+                    return;
+                }
+                Object.entries(data).forEach(([question, answer]) => {
+                    const item = document.createElement('div');
+                    item.className = 'result-item';
+                    const qDiv = document.createElement('div');
+                    qDiv.className = 'question';
+                    qDiv.textContent = question;
+                    const aDiv = document.createElement('div');
+                    aDiv.className = 'answer';
+                    renderAnswerInto(answer, aDiv, (src) => this.showImageModal(src));
+                    item.appendChild(qDiv);
+                    item.appendChild(aDiv);
+                    this.resultsContent.appendChild(item);
+                });
+                this.showResults();
+                this.scrollToResults();
+            }
+
+            displayError(message) {
+                this.resultsContent.innerHTML = '';
+                const item = document.createElement('div');
+                item.className = 'result-item error';
+                const title = document.createElement('div');
+                title.className = 'question';
+                title.textContent = '❌ Error';
+                const content = document.createElement('div');
+                content.className = 'answer';
+                content.textContent = message;
+                item.appendChild(title);
+                item.appendChild(content);
+                this.resultsContent.appendChild(item);
+                this.showResults();
+                this.scrollToResults();
+            }
+
+            showImageModal(src) {
+                this.modalImage.src = src;
+                this.modal.style.display = 'block';
+                document.body.style.overflow = 'hidden';
+            }
+            hideImageModal() {
+                this.modal.style.display = 'none';
+                document.body.style.overflow = 'auto';
+            }
+            showLoading() {
+                this.loading.style.display = 'block';
+                this.submitBtn.disabled = true;
+                this.submitBtn.textContent = '⏳ Analyzing...';
+            }
+            hideLoading() {
+                this.loading.style.display = 'none';
+                this.submitBtn.disabled = false;
+                this.submitBtn.textContent = '🚀 Analyze Data';
+            }
+            showResults() {
+                this.results.style.display = 'block';
+            }
+            hideResults() {
+                this.results.style.display = 'none';
+            }
+            scrollToResults() {
+                setTimeout(() => this.results.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+            }
+            clearForm() {
+                this.qFileInput.value = '';
+                this.dFileInput.value = '';
+                this.qInfo.style.display = 'none';
+                this.dInfo.style.display = 'none';
+                this.qDrop.classList.remove('has-file');
+                this.dDrop.classList.remove('has-file');
+                this.qDrop.querySelector('span').textContent = 'Choose your questions (.txt)';
+                this.dDrop.querySelector('span').textContent = 'Choose or drag & drop your dataset';
+                this.hideResults();
+                this.hideLoading();
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => { new DataAnalystApp(); });
+    </script>
+</body>
+<div class="footer">&copy; 2025 Sidhaarth. All rights reserved.</div>
+</html>
