@@ -672,22 +672,34 @@ async def analyze_data(request: Request):
         if "error" in result:
             raise HTTPException(500, detail=result["error"])
 
-        # Post-process key mapping & type casting
+        # Post-process key mapping & type casting (robust, generic)
         if keys_list and type_map:
             mapped = {}
-            for idx, q in enumerate(result.keys()):
-                if idx < len(keys_list):
-                    key = keys_list[idx]
+            # If result is a dict and all keys match, map by key
+            if isinstance(result, dict) and all(k in result for k in keys_list):
+                for key in keys_list:
+                    val = result.get(key, None)
                     caster = type_map.get(key, str)
+                    if isinstance(val, str) and val.startswith("data:image/"):
+                        val = val.split(",", 1)[1] if "," in val else val
                     try:
-                        val = result[q]
-                        if isinstance(val, str) and val.startswith("data:image/"):
-                            # Remove data URI prefix
-                            val = val.split(",", 1)[1] if "," in val else val
                         mapped[key] = caster(val) if val not in (None, "") else val
                     except Exception:
-                        mapped[key] = result[q]
-            result = mapped
+                        mapped[key] = val
+                result = mapped
+            # If result is a list and length matches, map by index
+            elif isinstance(result, list) and len(result) == len(keys_list):
+                for idx, key in enumerate(keys_list):
+                    val = result[idx]
+                    caster = type_map.get(key, str)
+                    if isinstance(val, str) and val.startswith("data:image/"):
+                        val = val.split(",", 1)[1] if "," in val else val
+                    try:
+                        mapped[key] = caster(val) if val not in (None, "") else val
+                    except Exception:
+                        mapped[key] = val
+                result = mapped
+            # Otherwise, do not map, just return the raw result (prevents all 'Answer not found')
 
         return JSONResponse(content=result)
 
@@ -1116,4 +1128,3 @@ async def diagnose(full: bool = Query(False, description="If true, run extended 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
-
