@@ -672,9 +672,10 @@ async def analyze_data(request: Request):
         if "error" in result:
             raise HTTPException(500, detail=result["error"])
 
-        # Post-process key mapping & type casting (robust, generic, with index fallback)
+        # Post-process key mapping & type casting (robust, generic, with index fallback and warning)
         if keys_list and type_map:
             mapped = {}
+            mapping_warning = None
             # If result is a dict and all keys match, map by key
             if isinstance(result, dict) and all(k in result for k in keys_list):
                 for key in keys_list:
@@ -700,6 +701,7 @@ async def analyze_data(request: Request):
                     except Exception:
                         mapped[key] = val
                 result = mapped
+                mapping_warning = "LLM result keys do not match questions; mapped by index. Please check LLM prompt."
             # If result is a list and length matches, map by index
             elif isinstance(result, list) and len(result) == len(keys_list):
                 for idx, key in enumerate(keys_list):
@@ -712,7 +714,10 @@ async def analyze_data(request: Request):
                     except Exception:
                         mapped[key] = val
                 result = mapped
+                mapping_warning = "LLM result is a list; mapped by index. Please check LLM prompt."
             # Otherwise, do not map, just return the raw result (prevents all 'Answer not found')
+            if mapping_warning:
+                result = {"result": result, "mapping_warning": mapping_warning}
 
         return JSONResponse(content=result)
 
