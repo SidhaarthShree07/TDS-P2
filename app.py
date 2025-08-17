@@ -672,13 +672,26 @@ async def analyze_data(request: Request):
         if "error" in result:
             raise HTTPException(500, detail=result["error"])
 
-        # Post-process key mapping & type casting (robust, generic)
+        # Post-process key mapping & type casting (robust, generic, with index fallback)
         if keys_list and type_map:
             mapped = {}
             # If result is a dict and all keys match, map by key
             if isinstance(result, dict) and all(k in result for k in keys_list):
                 for key in keys_list:
                     val = result.get(key, None)
+                    caster = type_map.get(key, str)
+                    if isinstance(val, str) and val.startswith("data:image/"):
+                        val = val.split(",", 1)[1] if "," in val else val
+                    try:
+                        mapped[key] = caster(val) if val not in (None, "") else val
+                    except Exception:
+                        mapped[key] = val
+                result = mapped
+            # If result is a dict and lengths match, map by index (fallback)
+            elif isinstance(result, dict) and len(result) == len(keys_list):
+                result_values = list(result.values())
+                for idx, key in enumerate(keys_list):
+                    val = result_values[idx]
                     caster = type_map.get(key, str)
                     if isinstance(val, str) and val.startswith("data:image/"):
                         val = val.split(",", 1)[1] if "," in val else val
@@ -1128,3 +1141,4 @@ async def diagnose(full: bool = Query(False, description="If true, run extended 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+
