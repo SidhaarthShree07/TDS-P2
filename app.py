@@ -552,10 +552,16 @@ def run_agent_safely(llm_input: str) -> Dict:
 
         # exec_result['result'] should be results dict
         results_dict = exec_result.get("result", {})
-        # Map to original questions (they asked to use exact question strings)
-        output = {}
-        for q in questions:
-            output[q] = results_dict.get(q, "Answer not found")
+        # First try mapping by key
+        output = {q: results_dict.get(q, "Answer not found") for q in questions}
+        # If all are 'Answer not found' and lengths match, map by index
+        if (
+            isinstance(results_dict, dict)
+            and len(results_dict) == len(questions)
+            and all(v == "Answer not found" for v in output.values())
+        ):
+            values = list(results_dict.values())
+            output = {q: values[i] for i, q in enumerate(questions)}
         return output
 
     except Exception as e:
@@ -672,10 +678,9 @@ async def analyze_data(request: Request):
         if "error" in result:
             raise HTTPException(500, detail=result["error"])
 
-        # Post-process key mapping & type casting (robust, generic, with index fallback and warning)
+        # Post-process key mapping & type casting (robust, generic, with index fallback)
         if keys_list and type_map:
             mapped = {}
-            mapping_warning = None
             # If result is a dict and all keys match, map by key
             if isinstance(result, dict) and all(k in result for k in keys_list):
                 for key in keys_list:
@@ -701,7 +706,6 @@ async def analyze_data(request: Request):
                     except Exception:
                         mapped[key] = val
                 result = mapped
-                mapping_warning = "LLM result keys do not match questions; mapped by index. Please check LLM prompt."
             # If result is a list and length matches, map by index
             elif isinstance(result, list) and len(result) == len(keys_list):
                 for idx, key in enumerate(keys_list):
@@ -714,10 +718,7 @@ async def analyze_data(request: Request):
                     except Exception:
                         mapped[key] = val
                 result = mapped
-                mapping_warning = "LLM result is a list; mapped by index. Please check LLM prompt."
             # Otherwise, do not map, just return the raw result (prevents all 'Answer not found')
-            if mapping_warning:
-                result = {"result": result, "mapping_warning": mapping_warning}
 
         return JSONResponse(content=result)
 
@@ -774,7 +775,17 @@ def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
             return {"error": f"Execution failed: {exec_result.get('message')}", "raw": exec_result.get("raw")}
 
         results_dict = exec_result.get("result", {})
-        return {q: results_dict.get(q, "Answer not found") for q in questions}
+        # First try mapping by key
+        output = {q: results_dict.get(q, "Answer not found") for q in questions}
+        # If all are 'Answer not found' and lengths match, map by index
+        if (
+            isinstance(results_dict, dict)
+            and len(results_dict) == len(questions)
+            and all(v == "Answer not found" for v in output.values())
+        ):
+            values = list(results_dict.values())
+            output = {q: values[i] for i, q in enumerate(questions)}
+        return output
 
     except Exception as e:
         logger.exception("run_agent_safely_unified failed")
