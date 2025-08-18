@@ -336,7 +336,7 @@ def scrape_url_to_dataframe(url: str) -> Dict[str, Any]:
 '''
 
 
-def write_and_run_temp_python(code: str, injected_pickle: str = None, timeout: int = 60) -> Dict[str, Any]:
+def write_and_run_temp_python(code: str, injected_pickle: str = None, timeout: int = 60, questions: List[str] = None) -> Dict[str, Any]:
     """
     Write a temp python file which:
       - provides a safe environment (imports)
@@ -417,6 +417,12 @@ def plot_to_base64(max_bytes=100000):
     script_lines.extend(preamble)
     script_lines.append(helper)
     script_lines.append(SCRAPE_FUNC)
+    # expose questions to the executed code if provided
+    if questions is not None:
+        try:
+            script_lines.append("questions = " + json.dumps(list(questions), ensure_ascii=False) + "\n")
+        except Exception:
+            script_lines.append("questions = []\n")
     script_lines.append("\nresults = {}\n")
     script_lines.append(code)
     # ensure results printed as json
@@ -553,7 +559,7 @@ def run_agent_safely(llm_input: str) -> Dict:
             # Make sure agent's code can reference df/data: we will inject the pickle loader in the temp script
 
         # Execute code in temp python script
-        exec_result = write_and_run_temp_python(code, injected_pickle=pickle_path, timeout=LLM_TIMEOUT_SECONDS)
+        exec_result = write_and_run_temp_python(code, injected_pickle=pickle_path, timeout=LLM_TIMEOUT_SECONDS, questions=questions)
         if exec_result.get("status") != "success":
             return {"error": f"Execution failed: {exec_result.get('message', exec_result)}", "raw": exec_result.get("raw")}
 
@@ -825,7 +831,7 @@ def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
                 df.to_pickle(temp_pkl.name)
                 pickle_path = temp_pkl.name
 
-        exec_result = write_and_run_temp_python(code, injected_pickle=pickle_path, timeout=LLM_TIMEOUT_SECONDS)
+        exec_result = write_and_run_temp_python(code, injected_pickle=pickle_path, timeout=LLM_TIMEOUT_SECONDS, questions=questions)
         if exec_result.get("status") != "success":
             return {"error": f"Execution failed: {exec_result.get('message')}", "raw": exec_result.get("raw")}
 
