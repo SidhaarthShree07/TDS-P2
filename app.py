@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi import FastAPI
 from dotenv import load_dotenv
-import pytesseract
+
 import requests
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -36,6 +36,13 @@ try:
     PIL_AVAILABLE = True
 except Exception:
     PIL_AVAILABLE = False
+
+# OCR structured extractor
+try:
+    from ocr_extractor import ocr_extract_bytes, to_readable_summary
+    OCR_AVAILABLE = True
+except Exception:
+    OCR_AVAILABLE = False
 
 # LangChain / LLM imports (keep as you used)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -570,6 +577,7 @@ def run_agent_safely(llm_input: str) -> Dict:
 
 
 from fastapi import Request
+
 @app.post("/api")
 async def analyze_data(request: Request):
     try:
@@ -614,18 +622,36 @@ async def analyze_data(request: Request):
                     df = pd.DataFrame(json.loads(content.decode("utf-8")))
             elif filename.endswith(".png") or filename.endswith(".jpg") or filename.endswith(".jpeg"):
                 try:
-                    if PIL_AVAILABLE:
-                        image = Image.open(BytesIO(content))
-                        image = image.convert("RGB")  # ensure RGB format
-                        # OCR: extract text from image
-                        text = pytesseract.image_to_string(image)
-                        # Try to parse as CSV if possible, else as plain text
-                        try:
-                            df = pd.read_csv(io.StringIO(text))
-                        except Exception:
-                            df = pd.DataFrame({"ocr_text": [text]})
-                    else:
-                        raise HTTPException(400, "PIL not available for image processing")
+                    if not OCR_AVAILABLE:
+                        raise HTTPException(500, "OCR module not available. Ensure ocr_extractor.py is present and dependencies installed.")
+                    # Structured OCR
+                    ocr_lang = os.getenv("OCR_LANG", "eng")
+                    ocr = ocr_extract_bytes(content, lang=ocr_lang)
+                    # Log full structured OCR for debugging (trim to avoid huge logs)
+                    try:
+                        logger.info("OCR structured result: %s", json.dumps(ocr, ensure_ascii=False)[:5000])
+                        logger.info("OCR summary:\n%s", to_readable_summary(ocr))
+                    except Exception:
+                        pass
+
+                    # Normalize into a generic DataFrame usable by LLM code
+                    rows = []
+                    rows.append({"type": "full_text", "key": None, "value": ocr.get("text", "")})
+                    for para in (ocr.get("paragraphs") or []):
+                        rows.append({"type": "paragraph", "key": None, "value": para})
+                    for k, v in (ocr.get("key_values") or {}).items():
+                        rows.append({"type": "kv", "key": k, "value": v})
+                    for i, tbl in enumerate(ocr.get("tables") or []):
+                        rows.append({
+                            "type": "table",
+                            "key": f"table_{i}",
+                            "value": "",
+                            "table_columns": json.dumps(tbl.get("columns", []), ensure_ascii=False),
+                            "table_rows": json.dumps(tbl.get("rows", []), ensure_ascii=False),
+                        })
+                    df = pd.DataFrame(rows)
+                except HTTPException:
+                    raise
                 except Exception as e:
                     raise HTTPException(400, f"Image OCR processing failed: {str(e)}")
             else:
