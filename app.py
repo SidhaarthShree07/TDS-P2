@@ -650,6 +650,8 @@ async def analyze_data(request: Request):
                             "table_rows": json.dumps(tbl.get("rows", []), ensure_ascii=False),
                         })
                     df = pd.DataFrame(rows)
+                    # Mark that the dataset originates from OCR
+                    df.__dict__["_is_ocr_df"] = True  # lightweight marker for local use
                 except HTTPException:
                     raise
                 except Exception as e:
@@ -671,6 +673,21 @@ async def analyze_data(request: Request):
 
         # Build rules based on data presence
         if dataset_uploaded:
+            # Extra guidance if this is OCR-structured data
+            ocr_hint = ""
+            try:
+                if set(map(str, df.columns)).issuperset({"type", "key", "value"}):
+                    ocr_hint = (
+                        "\nOCR-specific guidance:\n"
+                        "- The DataFrame comes from OCR and has rows with a `type` column among: full_text, paragraph, kv, table.\n"
+                        "- For `kv` rows, use `key` and `value`.\n"
+                        "- For `table` rows, parse JSON in `table_columns` and `table_rows` to reconstruct tables: \n"
+                        "    `cols = json.loads(row['table_columns'])`; `rows = json.loads(row['table_rows'])`.\n"
+                        "- Use only this DataFrame for computations and charting; do not fetch external data.\n"
+                    )
+            except Exception:
+                pass
+
             llm_rules = (
                 "Rules:\n"
                 "1) You have access to a pandas DataFrame called `df` and its dictionary form `data`.\n"
@@ -680,6 +697,7 @@ async def analyze_data(request: Request):
                 '   - "questions": [ ... original question strings ... ]\n'
                 '   - "code": "..."  (Python code that fills `results` with exact question strings as keys)\n'
                 "5) For plots: use plot_to_base64() helper to return base64 image data under 100kB.\n"
+                f"{ocr_hint}"
             )
         else:
             llm_rules = (
@@ -707,6 +725,12 @@ async def analyze_data(request: Request):
                 raise HTTPException(408, "Processing timeout")
 
         if "error" in result:
+            try:
+                logger.error("Agent error: %s", result.get("error"))
+                if result.get("raw"):
+                    logger.error("Agent raw output: %s", str(result.get("raw"))[:3000])
+            except Exception:
+                pass
             raise HTTPException(500, detail=result["error"])
 
         # Post-process key mapping & type casting (robust, generic, with index fallback)
