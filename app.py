@@ -823,8 +823,8 @@ async def analyze_data(request: Request):
 
             # Branch 2: NO DATASET → use AIProxy, but still do code-exec locally
             else:
-                def _aiproxy_job():
-                    raw_out = call_aiproxy(llm_input, timeout=LLM_TIMEOUT_SECONDS)
+                def _aipipe_job():
+                    raw_out = call_aipipe(llm_input, timeout=LLM_TIMEOUT_SECONDS)
                     parsed = clean_llm_output(raw_out)
                     if "error" in parsed:
                         return {"error": parsed["error"]}
@@ -853,7 +853,7 @@ async def analyze_data(request: Request):
                     return output
 
                 with concurrent.futures.ThreadPoolExecutor() as ex:
-                    fut = ex.submit(_aiproxy_job)
+                    fut = ex.submit(_aipipe_job)
                     try:
                         result = fut.result(timeout=LLM_TIMEOUT_SECONDS)
                     except concurrent.futures.TimeoutError:
