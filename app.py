@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi import FastAPI
 from dotenv import load_dotenv
-
+import pytesseract
 import requests
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -618,13 +618,8 @@ async def analyze_data(request: Request):
                         image = Image.open(BytesIO(content))
                         image = image.convert("RGB")  # ensure RGB format
                         # OCR: extract text from image
-                        try:
-                            import pytesseract
-                        except ImportError:
-                            raise HTTPException(500, "pytesseract is required for OCR. Please install it.")
                         text = pytesseract.image_to_string(image)
                         # Try to parse as CSV if possible, else as plain text
-                        import io
                         try:
                             df = pd.read_csv(io.StringIO(text))
                         except Exception:
