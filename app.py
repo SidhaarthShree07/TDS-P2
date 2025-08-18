@@ -89,9 +89,16 @@ class LLMWithFallback:
         self.temperature = temperature
         self.slow_keys_log = defaultdict(list)
         self.failing_keys_log = defaultdict(int)
-        self.current_llm = None  # placeholder for actual ChatGoogleGenerativeAI instance
 
-    def _get_llm_instance(self):
+    def get_llm_instance(self, model_name=None):
+        if model_name:
+            for key in self.keys:
+                try:
+                    return ChatGoogleGenerativeAI(model=model_name, temperature=self.temperature, google_api_key=key)
+                except Exception:
+                    pass
+            raise RuntimeError(f"Failed to initialize LLM for model: {model_name}")
+
         last_error = None
         for model in self.models:
             for key in self.keys:
@@ -101,7 +108,6 @@ class LLMWithFallback:
                         temperature=self.temperature,
                         google_api_key=key
                     )
-                    self.current_llm = llm_instance
                     return llm_instance
                 except Exception as e:
                     last_error = e
@@ -112,15 +118,14 @@ class LLMWithFallback:
                     time.sleep(0.5)
         raise RuntimeError(f"All models/keys failed. Last error: {last_error}")
 
+    def invoke(self, prompt, model_name=None):
+        llm_instance = self.get_llm_instance(model_name)
+        return llm_instance.invoke(prompt)
+
     # Required by LangChain agent
     def bind_tools(self, tools):
         llm_instance = self._get_llm_instance()
         return llm_instance.bind_tools(tools)
-
-    # Keep .invoke interface
-    def invoke(self, prompt):
-        llm_instance = self._get_llm_instance()
-        return llm_instance.invoke(prompt)
 
 
 LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", 240))
