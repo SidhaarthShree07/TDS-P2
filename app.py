@@ -773,7 +773,7 @@ async def analyze_data(request: Request):
             f"{df_preview if df_preview else ''}"
             "Respond with the JSON object only."
         )
-        if is_image_upload = False:
+        if is_image_upload == False:
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as ex:
                 fut = ex.submit(run_agent_safely_unified, llm_input, pickle_path)
