@@ -59,7 +59,6 @@ GEMINI_KEYS = [os.getenv(f"gemini_api_{i}") for i in range(1, 11)]
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k]
 
 MODEL_HIERARCHY = [
-    "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
     "gemini-2.0-flash",
