@@ -533,7 +533,17 @@ def run_agent_safely(llm_input: str) -> Dict:
 
         parsed = clean_llm_output(raw_out)
         if "error" in parsed:
-            return parsed
+            # Try a last-ditch coercion: locate outermost braces in raw text
+            try:
+                start = raw_out.find("{")
+                end = raw_out.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    coerced = json.loads(raw_out[start:end+1])
+                    parsed = coerced
+                else:
+                    return parsed
+            except Exception:
+                return parsed
 
         if not isinstance(parsed, dict) or "code" not in parsed or "questions" not in parsed:
             return {"error": f"Invalid agent response format: {parsed}"}
@@ -757,19 +767,21 @@ async def analyze_data(request: Request):
             except Exception:
                 pass
 
-            # Use a stricter agent system message when OCR is involved to reduce null outputs
+            # Use a stricter, generalized system message when OCR is involved (no image-specific constants)
             if ocr_df_mode:
                 llm_rules = (
-                    "You are an analytics code generator. Return ONLY a JSON object as specified.\n"
+                    "You are an analytics code generator. Return ONLY a JSON object.\n"
                     "Rules:\n"
-                    "1) You have access to a pandas DataFrame called `df` and its dictionary form `data`.\n"
-                    "2) DO NOT call scrape_url_to_dataframe() or fetch any external data.\n"
-                    "3) Use only the uploaded dataset for answering questions.\n"
-                    "4) Produce a final JSON object with keys:\n"
-                    '   - "questions": [ ... original question strings ... ]\n'
-                    '   - "code": "..."  (Python code that fills `results` with exact question strings as keys)\n'
-                    "5) For plots: use plot_to_base64() helper to return base64 image data under 100kB.\n"
-                    "6) Your code MUST be executable end-to-end with no undefined variables.\n"
+                    "- You have access to a pandas DataFrame `df` constructed from OCR.\n"
+                    "- `df` is row-oriented with a `type` column among: full_text, paragraph, kv, table.\n"
+                    "- For table rows, parse JSON in `table_columns`/`table_rows` to reconstruct tables.\n"
+                    "- If tables are missing, derive structured data from `kv` rows and numeric tokens in `paragraph`/`full_text`.\n"
+                    "- DO NOT fetch any external data or call tools.\n"
+                    "- Output JSON must include:\n"
+                    "    'questions': the exact question strings provided;\n"
+                    "    'code': Python that fills a dict named `results` with answers keyed by those exact strings.\n"
+                    "- The code MUST be executable with only pandas/numpy/matplotlib available and helper plot_to_base64().\n"
+                    "- Define all variables you use (e.g., create DataFrames from `df` rows).\n"
                     f"{ocr_hint}"
                 )
             else:
