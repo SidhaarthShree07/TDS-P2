@@ -674,18 +674,16 @@ async def analyze_data(request: Request):
                 base64_image = base64.b64encode(content).decode('utf-8')
 
                 llm_rules = (
-                    "You are a data analyst agent. You will receive an image of a chart or table "
-                    "and a list of questions. Your task is to analyze the image and generate "
-                    "a valid JSON object containing Python code to answer the questions.\n"
+                    "You are a data analyst agent. You will be provided with an image of a chart or table and a set of questions.\n"
+                    "Your task is to respond with a single JSON object containing Python code to answer those questions.\n"
                     "Rules:\n"
-                    "- The image contains all the data you need. Do not try to fetch external data or call any tools.\n"
-                    "- Your code must **create a pandas DataFrame from the data you extract from the image**.\n"
-                    "- **Hardcode the extracted data directly into your Python script** (e.g., using a list of dictionaries or a numpy array).\n"
-                    "- Your code should then use this DataFrame to perform all calculations and plotting to answer the questions.\n"
-                    "- Your code should use the `results` dictionary to store answers, keyed by the exact question strings.\n"
-                    "- For any questions asking for a plot, use the `plot_to_base64()` helper function.\n"
-                    "- Assume the necessary libraries (pandas, numpy, matplotlib, etc.) are available.\n"
-                    "- Be extremely careful to correctly extract all data points (e.g., names, numbers) from the image.\n"
+                    "- The image is your ONLY source of data. You must extract all relevant numbers and names from it.\n"
+                    "- Your Python code MUST start by creating a pandas DataFrame from the data you extract from the image.\n"
+                    "- **Hardcode the extracted data directly into your Python script.** Use lists or a dictionary to represent the data, as it is non-tabular.\n"
+                    "- The code must use this DataFrame to perform all calculations and generate plots.\n"
+                    "- The output JSON must contain the exact question strings and a single `code` string.\n"
+                    "- All plots must use the `plot_to_base64()` helper function.\n"
+                    "- Do not make up any data. If a value is unreadable, you must leave it out or report it as missing.\n"
                 )
 
                 llm_input = [
