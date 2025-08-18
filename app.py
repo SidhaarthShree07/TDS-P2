@@ -685,6 +685,7 @@ async def analyze_data(request: Request):
                     img_buffer = BytesIO()
                     Image.open(BytesIO(content)).convert('RGB').save(img_buffer, 'JPEG')
                     content = img_buffer.getvalue()
+                    mime_type = "image/jpeg"  # only override here
                 
                 # Convert image to raw base64 (no prefix)
                 base64_image = base64.b64encode(content).decode('utf-8')
@@ -723,27 +724,27 @@ async def analyze_data(request: Request):
                         {
                             "role": "user",
                             "parts": [
-                                {
-                                    "text": f"{llm_rules}\nQuestions:\n{questions_text}"
-                                },
+                                {"text": f"{llm_rules}\nQuestions:\n{questions_text}"},
                                 {
                                     "inline_data": {
                                         "mime_type": mime_type,
-                                        "data": base64_image
+                                        "data": base64_image,
                                     }
-                                }
-                            ]
+                                },
+                            ],
                         }
                     ]
                 }
-                
+                                        
                 api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
                 
                 try:
                     response = requests.post(api_url, headers=headers, json=payload, timeout=LLM_TIMEOUT_SECONDS)
+                    print("✅ Status:", response.status_code)
                     response.raise_for_status()
                     resp_json = response.json()
-            
+                    print("🔎 Raw response JSON:")
+                    print(json.dumps(resp_json, indent=2))
                     # Collect all text parts from the first candidate
                     try:
                         parts = resp_json["candidates"][0]["content"]["parts"]
