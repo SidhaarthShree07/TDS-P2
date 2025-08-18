@@ -730,21 +730,19 @@ async def analyze_data(request: Request):
             
                 result = exec_result.get("result", {})
                 return JSONResponse(content=result)
-        
-        else:
-            raise HTTPException(400, f"Unsupported data file type: {filename}")
-
-        # Pickle for injection
-        temp_pkl = tempfile.NamedTemporaryFile(suffix=".pkl", delete=False)
-        temp_pkl.close()
-        df.to_pickle(temp_pkl.name)
-        pickle_path = temp_pkl.name
-
-        df_preview = (
-            f"\n\nThe uploaded dataset has {len(df)} rows and {len(df.columns)} columns.\n"
-            f"Columns: {', '.join(df.columns.astype(str))}\n"
-            f"First rows:\n{df.head(5).to_markdown(index=False)}\n"
-        )
+            else:
+                raise HTTPException(400, f"Unsupported data file type: {filename}")
+            # Pickle for injection
+            temp_pkl = tempfile.NamedTemporaryFile(suffix=".pkl", delete=False)
+            temp_pkl.close()
+            df.to_pickle(temp_pkl.name)
+            pickle_path = temp_pkl.name
+    
+            df_preview = (
+                f"\n\nThe uploaded dataset has {len(df)} rows and {len(df.columns)} columns.\n"
+                f"Columns: {', '.join(df.columns.astype(str))}\n"
+                f"First rows:\n{df.head(5).to_markdown(index=False)}\n"
+            )
 
         # Build rules based on data presence
         if dataset_uploaded:
