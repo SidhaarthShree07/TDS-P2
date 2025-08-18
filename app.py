@@ -85,8 +85,11 @@ class LLMWithFallback:
 
     def _get_llm_instance(self):
         last_error = None
+        # Try each model, and for each retry, rotate to the next key
         for model in self.models:
-            for key in self.keys:
+            num_keys = len(self.keys)
+            for attempt in range(num_keys):
+                key = self.keys[attempt % num_keys]
                 try:
                     llm_instance = ChatGoogleGenerativeAI(
                         model=model,
