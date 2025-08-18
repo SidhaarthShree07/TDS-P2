@@ -601,7 +601,7 @@ async def analyze_data(request: Request):
         pickle_path = None
         df_preview = ""
         dataset_uploaded = False
-
+        is_image_upload = False
         if data_file:
             dataset_uploaded = True
             filename = data_file.filename.lower()
@@ -747,7 +747,7 @@ async def analyze_data(request: Request):
                 "Respond with the JSON object only."
             )
             
-        if not is_image_upload:
+        if is_image_upload == False:
             # Run agent
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as ex:
