@@ -737,12 +737,18 @@ async def analyze_data(request: Request):
                     ]
                 }
                 
-                api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key={api_key}"
+                api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key={api_key}"
                 
                 try:
                     response = requests.post(api_url, headers=headers, json=payload, timeout=LLM_TIMEOUT_SECONDS)
                     response.raise_for_status()
-                    raw_out = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+                    resp_json = response.json()
+                    try:
+                        parts = resp_json["candidates"][0]["content"]["parts"]
+                        raw_out = "".join([p.get("text", "") for p in parts if "text" in p])
+                    except (KeyError, IndexError) as e:
+                        raise HTTPException(500, detail=f"Invalid response format: {resp_json}")
+
                 except requests.exceptions.RequestException as e:
                     raise HTTPException(500, detail=f"Failed to call Gemini API: {str(e)}")
                 except (KeyError, IndexError) as e:
