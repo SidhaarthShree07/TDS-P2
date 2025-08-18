@@ -152,44 +152,41 @@ def parse_keys_and_types(raw_questions: str):
     keys_list = [k for k, _ in matches]
     return keys_list, type_map
 
-def call_aiproxy(prompt: str, model: str = "gpt-4o-mini", timeout: int = 60) -> str:
+def call_aipipe(prompt: str, model: str = "gpt-4.1-nano", timeout: int = 60) -> str:
     """
-    Calls AIProxy (OpenAI-compatible) at https://aiproxy.sanand.workers.dev/
-    Uses AIPROXY_API_KEY from environment.
+    Calls AI Pipe (OpenAI proxy) for chat responses.
+    Uses AIPIPE_TOKEN from environment.
     """
-    api_key = os.getenv("AIPROXY_API_KEY")
+    api_key = os.getenv("AIPIPE_TOKEN")
     if not api_key:
-        raise HTTPException(500, "AIProxy API key not configured. Set AIPROXY_API_KEY.")
+        raise HTTPException(500, "AI Pipe token not configured. Set AIPIPE_TOKEN.")
 
-    url = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
+    url = "https://aipipe.org/openai/v1/responses"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     payload = {
         "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are a careful data analyst. Follow the user's rules exactly and return ONLY valid JSON."
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
+        "input": prompt
     }
 
     try:
         resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
         if not resp.ok:
-            raise HTTPException(resp.status_code, f"AIProxy error: {resp.text}")
+            raise HTTPException(resp.status_code, f"AI Pipe error: {resp.text}")
         data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        # Extract assistant text from AI Pipe's OpenAI-style response
+        outputs = data.get("output", [])
+        if not outputs:
+            raise HTTPException(500, f"AI Pipe returned no output: {data}")
+        content = outputs[0].get("content", [])
+        texts = [c.get("text", "") for c in content if "text" in c]
+        return "\n".join(texts).strip()
     except requests.Timeout:
-        raise HTTPException(504, f"AIProxy timeout after {timeout}s")
+        raise HTTPException(504, f"AI Pipe timeout after {timeout}s")
     except Exception as e:
-        raise HTTPException(502, f"AIProxy call failed: {e}")
+        raise HTTPException(502, f"AI Pipe call failed: {e}")
 
 
 
