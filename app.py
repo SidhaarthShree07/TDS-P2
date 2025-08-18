@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi import FastAPI
 from dotenv import load_dotenv
-from langchain_core.callbacks import BaseCallbackHandler
+
 import requests
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -81,29 +81,12 @@ class LLMWithFallback:
         self.temperature = temperature
         self.slow_keys_log = defaultdict(list)
         self.failing_keys_log = defaultdict(int)
-        self.current_llm = None
-        self.spl_key = os.getenv("spl_api_key")   # NEW: Special key
-        self.call_count = 0                       # NEW: Track calls
-
-    def set_call_count(self, count: int):
-        """Allows callback handler to update the call count."""
-        self.call_count = count
+        self.current_llm = None  # placeholder for actual ChatGoogleGenerativeAI instance
 
     def _get_llm_instance(self):
         last_error = None
-
-        # Decide which key set to use
-        keys_to_use = self.keys
-        if self.call_count > 1 and self.spl_key:
-            print(f"--- API Call #{self.call_count}: Switching to special API key. ---")
-            keys_to_use = [self.spl_key]
-        elif self.call_count > 0:
-            print(f"--- API Call #{self.call_count}: Using standard API key pool. ---")
-            
-        print(f"[DEBUG] call_count={self.call_count}, keys_to_use={keys_to_use}")
-
         for model in self.models:
-            for key in keys_to_use:
+            for key in self.keys:
                 try:
                     llm_instance = ChatGoogleGenerativeAI(
                         model=model,
@@ -130,18 +113,6 @@ class LLMWithFallback:
     def invoke(self, prompt):
         llm_instance = self._get_llm_instance()
         return llm_instance.invoke(prompt)
-
-class ApiCallCounter(BaseCallbackHandler):
-    """Callback to count LLM calls and update the LLM wrapper."""
-    def __init__(self, llm_wrapper: LLMWithFallback):
-        self.llm_call_count = 0
-        self.llm_wrapper = llm_wrapper
-
-    def on_llm_start(self, serialized: Dict[str, Any], prompts: List[str], **kwargs: Any) -> None:
-        """Increment counter each time an LLM call begins."""
-        self.llm_call_count += 1
-        self.llm_wrapper.set_call_count(self.llm_call_count)
-        print(f"[Callback] Incremented call_count -> {self.llm_wrapper.call_count}")
 
 
 LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", 240))
@@ -859,19 +830,17 @@ async def analyze_data(request: Request):
 
 
 def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
+    """
+    Runs the LLM agent and executes code.
+    - Retries up to 3 times if agent returns no output.
+    - If pickle_path is provided, injects that DataFrame directly.
+    - If no pickle_path, falls back to scraping when needed.
+    """
     try:
-        llm.call_count = 0
         max_retries = 3
         raw_out = ""
-
-        # NEW: Initialize callback handler
-        callback_handler = ApiCallCounter(llm_wrapper=llm)
-
         for attempt in range(1, max_retries + 1):
-            response = agent_executor.invoke(
-                {"input": llm_input},
-                config={"callbacks": [callback_handler]}  # Pass callback here
-            )
+            response = agent_executor.invoke({"input": llm_input}, {"timeout": LLM_TIMEOUT_SECONDS})
             raw_out = response.get("output") or response.get("final_output") or response.get("text") or ""
             if raw_out:
                 break
@@ -906,8 +875,14 @@ def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
             return {"error": f"Execution failed: {exec_result.get('message')}", "raw": exec_result.get("raw")}
 
         results_dict = exec_result.get("result", {})
+        # First try mapping by key
         output = {q: results_dict.get(q, "Answer not found") for q in questions}
-        if isinstance(results_dict, dict) and len(results_dict) == len(questions) and all(v == "Answer not found" for v in output.values()):
+        # If all are 'Answer not found' and lengths match, map by index
+        if (
+            isinstance(results_dict, dict)
+            and len(results_dict) == len(questions)
+            and all(v == "Answer not found" for v in output.values())
+        ):
             values = list(results_dict.values())
             output = {q: values[i] for i, q in enumerate(questions)}
         return output
