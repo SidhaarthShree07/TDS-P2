@@ -740,7 +740,13 @@ async def analyze_data(request: Request):
                 try:
                     response = requests.post(api_url, headers=headers, json=payload, timeout=LLM_TIMEOUT_SECONDS)
                     print("✅ Status:", response.status_code)
-                    response.raise_for_status()
+                    if not response.ok:
+                        print("❌ Error response text:")
+                        try:
+                            print(json.dumps(response.json(), indent=2))
+                        except Exception:
+                            print(response.text)  # fallback if it's not JSON
+                        response.raise_for_status()
                     resp_json = response.json()
                     print("🔎 Raw response JSON:")
                     print(json.dumps(resp_json, indent=2))
