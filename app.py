@@ -689,6 +689,7 @@ async def analyze_data(request: Request):
                 base64_image = base64.b64encode(content).decode('utf-8')
                 questions_text = raw_questions.strip()
                 
+                # Prepare the prompt and image data in the native Gemini API format
                 llm_rules = (
                     "You are an expert data analyst agent with multimodal capabilities. "
                     "You will analyze a provided image and generate Python code to answer a series of questions. "
@@ -707,31 +708,46 @@ async def analyze_data(request: Request):
                     "`plot_to_base64()` to convert plots to base64 strings.\n\n"
                     "Return ONLY valid JSON with no explanations, no markdown, and no text outside the JSON."
                 )
+                
+                # Make a direct call to the Gemini API using requests
+                api_key = os.getenv("gemini_api_3") # Use the first available key
+                if not api_key:
+                    raise HTTPException(500, "Gemini API key not found in environment variables.")
 
-                # Corrected format for Gemini API, using inline_data
-                contents = [
-                    {
-                        "role": "user",
-                        "parts": [
-                            {
-                                "text": f"{llm_rules}\nQuestions:\n{questions_text}"
-                            },
-                            {
-                                "inline_data": {
-                                    "mime_type": mime_type,
-                                    "data": base64_image
+                headers = {
+                    "Content-Type": "application/json"
+                }
+                
+                payload = {
+                    "contents": [
+                        {
+                            "role": "user",
+                            "parts": [
+                                {
+                                    "text": f"{llm_rules}\nQuestions:\n{questions_text}"
+                                },
+                                {
+                                    "inline_data": {
+                                        "mime_type": mime_type,
+                                        "data": base64_image
+                                    }
                                 }
-                            }
-                        ]
-                    }
-                ]
+                            ]
+                        }
+                    ]
+                }
                 
-                llm = LLMWithFallback()
-                gemini_vision_model = llm._get_llm_instance(model_name="gemini-pro-vision")
+                api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key={api_key}"
                 
-                response = gemini_vision_model.invoke(contents)
-                raw_out = response.content
-                
+                try:
+                    response = requests.post(api_url, headers=headers, json=payload, timeout=LLM_TIMEOUT_SECONDS)
+                    response.raise_for_status()
+                    raw_out = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+                except requests.exceptions.RequestException as e:
+                    raise HTTPException(500, detail=f"Failed to call Gemini API: {str(e)}")
+                except (KeyError, IndexError) as e:
+                    raise HTTPException(500, detail=f"Invalid response from Gemini API: {str(e)}")
+
                 parsed = clean_llm_output(raw_out)
                 if "error" in parsed:
                     raise HTTPException(500, detail=parsed["error"])
@@ -744,8 +760,6 @@ async def analyze_data(request: Request):
                     raise HTTPException(500, detail=f"Execution failed: {exec_result.get('message')}")
                 
                 result = exec_result.get("result", {})
-            else:
-                raise HTTPException(400, f"Unsupported data file type: {filename}")
         
         else:
             # No data file uploaded, assume web scraping is needed
