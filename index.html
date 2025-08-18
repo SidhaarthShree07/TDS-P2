@@ -432,7 +432,7 @@
             </div>
 
             <div class="results" id="results">
-                <h3>Analysis Results</h3>
+                <h3>📊 Analysis Results</h3>
                 <div id="resultsContent"></div>
             </div>
         </div>
@@ -471,7 +471,16 @@
             return null;
         }
 
+        function flattenAnswer(answer) {
+            // If answer is a single-item list, flatten it
+            if (Array.isArray(answer) && answer.length === 1) {
+                return answer[0];
+            }
+            return answer;
+        }
+
         function renderAnswerInto(answer, container, onImageClick) {
+            answer = flattenAnswer(answer);
             const maybeImg = normalizeImageData(answer);
             if (maybeImg) {
                 const img = document.createElement('img');
