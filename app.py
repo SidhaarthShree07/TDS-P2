@@ -641,9 +641,11 @@ async def analyze_data(request: Request):
                 try:
                     if not OCR_AVAILABLE:
                         raise HTTPException(500, "OCR module not available. Ensure ocr_extractor.py is present and dependencies installed.")
+                    
                     # Structured OCR
                     ocr_lang = os.getenv("OCR_LANG", "eng")
                     ocr = ocr_extract_bytes(content, lang=ocr_lang)
+                    
                     # Log full structured OCR for debugging (trim to avoid huge logs)
                     try:
                         logger.info("OCR structured result: %s", json.dumps(ocr, ensure_ascii=False)[:5000])
@@ -666,64 +668,9 @@ async def analyze_data(request: Request):
                             "table_columns": json.dumps(tbl.get("columns", []), ensure_ascii=False),
                             "table_rows": json.dumps(tbl.get("rows", []), ensure_ascii=False),
                         })
-                    # Heuristic: try to synthesize a tabular structure from names and numeric sequences
-                    try:
-                        import re as _re
-                        all_text = (ocr.get("text") or "") + "\n" + "\n".join(ocr.get("paragraphs") or [])
-                        # Candidate names line: longest run of capitalized words separated by spaces
-                        candidate_names: list[str] = []
-                        for para in (ocr.get("paragraphs") or []):
-                            words = [w for w in para.split() if w and w[0].isalpha()]
-                            caps = [w for w in words if _re.match(r"^[A-Z][a-zA-Z-]{1,}$", w)]
-                            # require most words to be capitalized and at least 3
-                            if len(caps) >= 3 and len(caps) >= len(candidate_names):
-                                candidate_names = caps
-                        # Numeric sequences
-                        numeric_sequences: list[list[float]] = []
-                        for para in (ocr.get("paragraphs") or []):
-                            nums = [_re.sub(r"[^0-9.+-]", "", t) for t in para.split()]
-                            nums = [n for n in nums if _re.match(r"^[+-]?(?:\d+\.?\d*|\d*\.?\d+)$", n or "")]
-                            if len(nums) >= 3:
-                                try:
-                                    numeric_sequences.append([float(n) for n in nums])
-                                except Exception:
-                                    continue
-                        # Choose sequences matching names length
-                        tables_to_add = []
-                        if candidate_names and numeric_sequences:
-                            L = len(candidate_names)
-                            seqs = [seq[:L] for seq in numeric_sequences if len(seq) >= L]
-                            if seqs:
-                                # Detect possible headers
-                                h1 = "metric_1"
-                                h2 = "metric_2"
-                                if _re.search(r"sales\s*amount", all_text, _re.IGNORECASE):
-                                    h1 = "Sales Amount"
-                                if _re.search(r"sales\s*volume", all_text, _re.IGNORECASE):
-                                    h2 = "Sales Volume"
-                                cols = ["Name", h1]
-                                rows_tbl = []
-                                # Use first numeric sequence; optionally second if available
-                                first = seqs[0]
-                                second = seqs[1] if len(seqs) > 1 else None
-                                if second is not None:
-                                    cols = ["Name", h1, h2]
-                                    for nm, a, b in zip(candidate_names, first, second):
-                                        rows_tbl.append([nm, a, b])
-                                else:
-                                    for nm, a in zip(candidate_names, first):
-                                        rows_tbl.append([nm, a])
-                                tables_to_add.append({"columns": cols, "rows": rows_tbl})
-                        for j, tdict in enumerate(tables_to_add):
-                            rows.append({
-                                "type": "table",
-                                "key": f"table_synth_{j}",
-                                "value": "",
-                                "table_columns": json.dumps(tdict.get("columns", []), ensure_ascii=False),
-                                "table_rows": json.dumps(tdict.get("rows", []), ensure_ascii=False),
-                            })
-                    except Exception:
-                        pass
+                    
+                    # This is where the old, brittle "Heuristic" code was. We've removed it.
+                    
                     df = pd.DataFrame(rows)
                     # Mark that the dataset originates from OCR
                     ocr_df_mode = True
