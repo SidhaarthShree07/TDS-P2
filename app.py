@@ -722,7 +722,6 @@ async def analyze_data(request: Request):
                 payload = {
                     "contents": [
                         {
-                            "role": "user",
                             "parts": [
                                 {"text": f"{llm_rules}\nQuestions:\n{questions_text}"},
                                 {
