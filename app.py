@@ -99,6 +99,8 @@ class LLMWithFallback:
             keys_to_use = [self.spl_key]
         elif self.call_count > 0:
             print(f"--- API Call #{self.call_count}: Using standard API key pool. ---")
+            
+        print(f"[DEBUG] call_count={self.call_count}, keys_to_use={keys_to_use}")
 
         for model in self.models:
             for key in keys_to_use:
@@ -117,7 +119,6 @@ class LLMWithFallback:
                         self.slow_keys_log[key].append(model)
                     self.failing_keys_log[key] += 1
                     time.sleep(0.5)
-        print(f"[DEBUG] call_count={self.call_count}, keys_to_use={keys_to_use}")
         raise RuntimeError(f"All models/keys failed. Last error: {last_error}")
 
     # Required by LangChain agent
@@ -140,6 +141,7 @@ class ApiCallCounter(BaseCallbackHandler):
         """Increment counter each time an LLM call begins."""
         self.llm_call_count += 1
         self.llm_wrapper.set_call_count(self.llm_call_count)
+        print(f"[Callback] Incremented call_count -> {self.llm_wrapper.call_count}")
 
 
 LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", 240))
