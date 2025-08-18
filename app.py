@@ -656,6 +656,64 @@ async def analyze_data(request: Request):
                             "table_columns": json.dumps(tbl.get("columns", []), ensure_ascii=False),
                             "table_rows": json.dumps(tbl.get("rows", []), ensure_ascii=False),
                         })
+                    # Heuristic: try to synthesize a tabular structure from names and numeric sequences
+                    try:
+                        import re as _re
+                        all_text = (ocr.get("text") or "") + "\n" + "\n".join(ocr.get("paragraphs") or [])
+                        # Candidate names line: longest run of capitalized words separated by spaces
+                        candidate_names: list[str] = []
+                        for para in (ocr.get("paragraphs") or []):
+                            words = [w for w in para.split() if w and w[0].isalpha()]
+                            caps = [w for w in words if _re.match(r"^[A-Z][a-zA-Z-]{1,}$", w)]
+                            # require most words to be capitalized and at least 3
+                            if len(caps) >= 3 and len(caps) >= len(candidate_names):
+                                candidate_names = caps
+                        # Numeric sequences
+                        numeric_sequences: list[list[float]] = []
+                        for para in (ocr.get("paragraphs") or []):
+                            nums = [_re.sub(r"[^0-9.+-]", "", t) for t in para.split()]
+                            nums = [n for n in nums if _re.match(r"^[+-]?(?:\d+\.?\d*|\d*\.?\d+)$", n or "")]
+                            if len(nums) >= 3:
+                                try:
+                                    numeric_sequences.append([float(n) for n in nums])
+                                except Exception:
+                                    continue
+                        # Choose sequences matching names length
+                        tables_to_add = []
+                        if candidate_names and numeric_sequences:
+                            L = len(candidate_names)
+                            seqs = [seq[:L] for seq in numeric_sequences if len(seq) >= L]
+                            if seqs:
+                                # Detect possible headers
+                                h1 = "metric_1"
+                                h2 = "metric_2"
+                                if _re.search(r"sales\s*amount", all_text, _re.IGNORECASE):
+                                    h1 = "Sales Amount"
+                                if _re.search(r"sales\s*volume", all_text, _re.IGNORECASE):
+                                    h2 = "Sales Volume"
+                                cols = ["Name", h1]
+                                rows_tbl = []
+                                # Use first numeric sequence; optionally second if available
+                                first = seqs[0]
+                                second = seqs[1] if len(seqs) > 1 else None
+                                if second is not None:
+                                    cols = ["Name", h1, h2]
+                                    for nm, a, b in zip(candidate_names, first, second):
+                                        rows_tbl.append([nm, a, b])
+                                else:
+                                    for nm, a in zip(candidate_names, first):
+                                        rows_tbl.append([nm, a])
+                                tables_to_add.append({"columns": cols, "rows": rows_tbl})
+                        for j, tdict in enumerate(tables_to_add):
+                            rows.append({
+                                "type": "table",
+                                "key": f"table_synth_{j}",
+                                "value": "",
+                                "table_columns": json.dumps(tdict.get("columns", []), ensure_ascii=False),
+                                "table_rows": json.dumps(tdict.get("rows", []), ensure_ascii=False),
+                            })
+                    except Exception:
+                        pass
                     df = pd.DataFrame(rows)
                     # Mark that the dataset originates from OCR
                     ocr_df_mode = True
@@ -680,7 +738,7 @@ async def analyze_data(request: Request):
 
         # Build rules based on data presence
         if dataset_uploaded:
-            # Extra guidance if this is OCR-structured data
+            # Extra guidance if this is OCR-structured data. Strengthen instructions to always emit JSON and usable code.
             ocr_hint = ""
             try:
                 if ocr_df_mode and set(map(str, df.columns)).issuperset({"type", "key", "value"}):
@@ -692,21 +750,40 @@ async def analyze_data(request: Request):
                         "    `cols = json.loads(row['table_columns'])`; `rows = json.loads(row['table_rows'])`.\n"
                         "- Use only this DataFrame for computations and charting; do not fetch external data.\n"
                         "- If no table is present in the OCR rows, use key/value pairs and/or parse numeric tokens from `paragraph` and `full_text` rows.\n"
+                        "- Always return ONLY a valid JSON object with keys `questions` and `code`.\n"
+                        "- Your code MUST define a dict named `results` whose keys are the EXACT question strings provided.\n"
+                        "- Assume `questions` is provided as a Python list of strings and `df` is the OCR DataFrame.\n"
                     )
             except Exception:
                 pass
 
-            llm_rules = (
-                "Rules:\n"
-                "1) You have access to a pandas DataFrame called `df` and its dictionary form `data`.\n"
-                "2) DO NOT call scrape_url_to_dataframe() or fetch any external data.\n"
-                "3) Use only the uploaded dataset for answering questions.\n"
-                "4) Produce a final JSON object with keys:\n"
-                '   - "questions": [ ... original question strings ... ]\n'
-                '   - "code": "..."  (Python code that fills `results` with exact question strings as keys)\n'
-                "5) For plots: use plot_to_base64() helper to return base64 image data under 100kB.\n"
-                f"{ocr_hint}"
-            )
+            # Use a stricter agent system message when OCR is involved to reduce null outputs
+            if ocr_df_mode:
+                llm_rules = (
+                    "You are an analytics code generator. Return ONLY a JSON object as specified.\n"
+                    "Rules:\n"
+                    "1) You have access to a pandas DataFrame called `df` and its dictionary form `data`.\n"
+                    "2) DO NOT call scrape_url_to_dataframe() or fetch any external data.\n"
+                    "3) Use only the uploaded dataset for answering questions.\n"
+                    "4) Produce a final JSON object with keys:\n"
+                    '   - "questions": [ ... original question strings ... ]\n'
+                    '   - "code": "..."  (Python code that fills `results` with exact question strings as keys)\n'
+                    "5) For plots: use plot_to_base64() helper to return base64 image data under 100kB.\n"
+                    "6) Your code MUST be executable end-to-end with no undefined variables.\n"
+                    f"{ocr_hint}"
+                )
+            else:
+                llm_rules = (
+                    "Rules:\n"
+                    "1) You have access to a pandas DataFrame called `df` and its dictionary form `data`.\n"
+                    "2) DO NOT call scrape_url_to_dataframe() or fetch any external data.\n"
+                    "3) Use only the uploaded dataset for answering questions.\n"
+                    "4) Produce a final JSON object with keys:\n"
+                    '   - "questions": [ ... original question strings ... ]\n'
+                    '   - "code": "..."  (Python code that fills `results` with exact question strings as keys)\n'
+                    "5) For plots: use plot_to_base64() helper to return base64 image data under 100kB.\n"
+                    f"{ocr_hint}"
+                )
         else:
             llm_rules = (
                 "Rules:\n"
@@ -826,11 +903,31 @@ def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
         raw_out = ""
         for attempt in range(1, max_retries + 1):
             response = agent_executor.invoke({"input": llm_input}, {"timeout": LLM_TIMEOUT_SECONDS})
-            raw_out = response.get("output") or response.get("final_output") or response.get("text") or ""
+            raw_out = response.get("output") or response.get("final_output") or response.get("text") or response.get("content") or ""
             if raw_out:
                 break
         if not raw_out:
-            return {"error": f"Agent returned no output after {max_retries} attempts"}
+            # Fallback: call LLM directly without the agent
+            try:
+                direct = llm.invoke(llm_input)
+                # Try to extract text from various response shapes
+                text = None
+                if isinstance(direct, str):
+                    text = direct
+                elif hasattr(direct, "content") and isinstance(direct.content, str):
+                    text = direct.content
+                elif hasattr(direct, "text") and isinstance(direct.text, str):
+                    text = direct.text
+                else:
+                    try:
+                        text = str(direct)
+                    except Exception:
+                        text = None
+                if not text:
+                    return {"error": f"Agent returned no output after {max_retries} attempts"}
+                raw_out = text
+            except Exception as e:
+                return {"error": f"Agent returned no output after {max_retries} attempts; direct call failed: {e}"}
 
         parsed = clean_llm_output(raw_out)
         if "error" in parsed:
