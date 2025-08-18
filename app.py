@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi import FastAPI
 from dotenv import load_dotenv
-
+from langchain_core.callbacks import BaseCallbackHandler
 import requests
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -81,15 +81,27 @@ class LLMWithFallback:
         self.temperature = temperature
         self.slow_keys_log = defaultdict(list)
         self.failing_keys_log = defaultdict(int)
-        self.current_llm = None  # placeholder for actual ChatGoogleGenerativeAI instance
+        self.current_llm = None
+        self.spl_key = os.getenv("spl_api_key")   # NEW: Special key
+        self.call_count = 0                       # NEW: Track calls
+
+    def set_call_count(self, count: int):
+        """Allows callback handler to update the call count."""
+        self.call_count = count
 
     def _get_llm_instance(self):
         last_error = None
-        # Try each model, and for each retry, rotate to the next key
+
+        # Decide which key set to use
+        keys_to_use = self.keys
+        if self.call_count > 2 and self.spl_key:
+            print(f"--- API Call #{self.call_count}: Switching to special API key. ---")
+            keys_to_use = [self.spl_key]
+        elif self.call_count > 0:
+            print(f"--- API Call #{self.call_count}: Using standard API key pool. ---")
+
         for model in self.models:
-            num_keys = len(self.keys)
-            for attempt in range(num_keys):
-                key = self.keys[attempt % num_keys]
+            for key in keys_to_use:
                 try:
                     llm_instance = ChatGoogleGenerativeAI(
                         model=model,
@@ -116,6 +128,17 @@ class LLMWithFallback:
     def invoke(self, prompt):
         llm_instance = self._get_llm_instance()
         return llm_instance.invoke(prompt)
+
+class ApiCallCounter(BaseCallbackHandler):
+    """Callback to count LLM calls and update the LLM wrapper."""
+    def __init__(self, llm_wrapper: LLMWithFallback):
+        self.llm_call_count = 0
+        self.llm_wrapper = llm_wrapper
+
+    def on_llm_start(self, serialized: Dict[str, Any], prompts: List[str], **kwargs: Any) -> None:
+        """Increment counter each time an LLM call begins."""
+        self.llm_call_count += 1
+        self.llm_wrapper.set_call_count(self.llm_call_count)
 
 
 LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", 240))
@@ -151,42 +174,6 @@ def parse_keys_and_types(raw_questions: str):
     type_map = {key: type_map_def.get(t.lower(), str) for key, t in matches}
     keys_list = [k for k, _ in matches]
     return keys_list, type_map
-
-def call_aipipe(prompt: str, model: str = "gemini-1.5-flash", timeout: int = 60) -> str:
-    """
-    Calls AI Pipe Gemini API (v1beta).
-    Uses AIPIPE_TOKEN from environment.
-    """
-    api_key = os.getenv("AIPIPE_TOKEN")
-    if not api_key:
-        raise HTTPException(500, "AI Pipe token not configured. Set AIPIPE_TOKEN.")
-
-    url = f"https://aipipe.org/geminiv1beta/models/{model}:generateContent"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "contents": [
-            {"parts": [{"text": prompt}]}
-        ]
-    }
-
-    try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
-        if not resp.ok:
-            raise HTTPException(resp.status_code, f"AI Pipe Gemini error: {resp.text}")
-        data = resp.json()
-        candidates = data.get("candidates", [])
-        if not candidates:
-            raise HTTPException(500, f"AI Pipe Gemini returned no candidates: {data}")
-        parts = candidates[0].get("content", {}).get("parts", [])
-        texts = [p.get("text", "") for p in parts if "text" in p]
-        return "\n".join(texts).strip()
-    except requests.Timeout:
-        raise HTTPException(504, f"AI Pipe Gemini timeout after {timeout}s")
-    except Exception as e:
-        raise HTTPException(502, f"AI Pipe Gemini call failed: {e}")
 
 
 
@@ -632,7 +619,6 @@ async def analyze_data(request: Request):
                     data_file = val
 
         if not questions_file:
-            logger.error("Missing questions file (.txt)")
             raise HTTPException(400, "Missing questions file (.txt)")
 
         raw_questions = (await questions_file.read()).decode("utf-8")
@@ -766,7 +752,6 @@ async def analyze_data(request: Request):
                 result = exec_result.get("result", {})
                 return JSONResponse(content=result)
             else:
-                logger.error(f"Unsupported data file type: {filename}")
                 raise HTTPException(400, f"Unsupported data file type: {filename}")
             # Pickle for injection
             temp_pkl = tempfile.NamedTemporaryFile(suffix=".pkl", delete=False)
@@ -807,77 +792,22 @@ async def analyze_data(request: Request):
             f"{df_preview if df_preview else ''}"
             "Respond with the JSON object only."
         )
-        logger.info(f"Prompt sent to agent:\n{llm_input}")
-
         if is_image_upload == False:
             import concurrent.futures
-
-            # Branch 1: DATASET PRESENT (pickle_path set) → keep your Gemini path EXACTLY as-is
-            if pickle_path:
-                with concurrent.futures.ThreadPoolExecutor() as ex:
-                    fut = ex.submit(run_agent_safely_unified, llm_input, pickle_path)
-                    try:
-                        result = fut.result(timeout=LLM_TIMEOUT_SECONDS)
-                    except concurrent.futures.TimeoutError:
-                        logger.error("Processing timeout in agent execution")
-                        raise HTTPException(408, "Processing timeout")
-
-            # Branch 2: NO DATASET → use AIProxy, but still do code-exec locally
-            else:
-                def _aipipe_job():
-                    raw_out = call_aipipe(llm_input, timeout=LLM_TIMEOUT_SECONDS)
-                    parsed = clean_llm_output(raw_out)
-                    if "error" in parsed:
-                        return {"error": parsed["error"]}
-
-                    if "code" not in parsed or "questions" not in parsed:
-                        return {"error": f"Invalid agent response: {parsed}"}
-
-                    # --- inline sanitize step for AI Pipe only ---
-                    code = parsed["code"]
-                    if code:
-                        code = code.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
-                        # strip out invisible unicode chars like zero-width spaces
-                        import re
-                        code = re.sub(r"[\u200b-\u200f\u202a-\u202e]", "", code)
-                    # ---------------------------------------------
-
-                    questions = parsed["questions"]
-
-                    exec_result = write_and_run_temp_python(
-                        code, injected_pickle=None, timeout=LLM_TIMEOUT_SECONDS
-                    )
-                    if exec_result.get("status") != "success":
-                        return {"error": f"Execution failed: {exec_result.get('message')}", "raw": exec_result.get("raw")}
-
-                    results_dict = exec_result.get("result", {})
-                    output = {q: results_dict.get(q, "Answer not found") for q in questions}
-                    if (
-                        isinstance(results_dict, dict)
-                        and len(results_dict) == len(questions)
-                        and all(v == "Answer not found" for v in output.values())
-                    ):
-                        values = list(results_dict.values())
-                        output = {q: values[i] for i, q in enumerate(questions)}
-                    return output
-
-                with concurrent.futures.ThreadPoolExecutor() as ex:
-                    fut = ex.submit(_aipipe_job)
-                    try:
-                        result = fut.result(timeout=LLM_TIMEOUT_SECONDS)
-                    except concurrent.futures.TimeoutError:
-                        logger.error("AIProxy processing timeout")
-                        raise HTTPException(408, "Processing timeout")
-
-            logger.info(f"Agent result: {result}")
-
+            with concurrent.futures.ThreadPoolExecutor() as ex:
+                fut = ex.submit(run_agent_safely_unified, llm_input, pickle_path)
+                try:
+                    result = fut.result(timeout=LLM_TIMEOUT_SECONDS)
+                except concurrent.futures.TimeoutError:
+                    raise HTTPException(408, "Processing timeout")
+    
             if "error" in result:
-                logger.error(f"Agent returned error: {result['error']}")
                 raise HTTPException(500, detail=result["error"])
-
-            # Post-process key mapping & type casting (unchanged)
+    
+            # Post-process key mapping & type casting (robust, generic, with index fallback)
             if keys_list and type_map:
                 mapped = {}
+                # If result is a dict and all keys match, map by key
                 if isinstance(result, dict) and all(k in result for k in keys_list):
                     for key in keys_list:
                         val = result.get(key, None)
@@ -887,9 +817,9 @@ async def analyze_data(request: Request):
                         try:
                             mapped[key] = caster(val) if val not in (None, "") else val
                         except Exception:
-                            logger.warning(f"Type casting failed for key {key} with value {val}")
                             mapped[key] = val
                     result = mapped
+                # If result is a dict and lengths match, map by index (fallback)
                 elif isinstance(result, dict) and len(result) == len(keys_list):
                     result_values = list(result.values())
                     for idx, key in enumerate(keys_list):
@@ -900,9 +830,9 @@ async def analyze_data(request: Request):
                         try:
                             mapped[key] = caster(val) if val not in (None, "") else val
                         except Exception:
-                            logger.warning(f"Type casting failed for key {key} with value {val}")
                             mapped[key] = val
                     result = mapped
+                # If result is a list and length matches, map by index
                 elif isinstance(result, list) and len(result) == len(keys_list):
                     for idx, key in enumerate(keys_list):
                         val = result[idx]
@@ -912,15 +842,13 @@ async def analyze_data(request: Request):
                         try:
                             mapped[key] = caster(val) if val not in (None, "") else val
                         except Exception:
-                            logger.warning(f"Type casting failed for key {key} with value {val}")
                             mapped[key] = val
                     result = mapped
-
-            logger.info(f"Final result returned: {result}")
+                # Otherwise, do not map, just return the raw result (prevents all 'Answer not found')
+    
             return JSONResponse(content=result)
 
     except HTTPException as he:
-        logger.error(f"HTTPException: {he.detail}")
         raise he
     except Exception as e:
         logger.exception("analyze_data failed")
@@ -928,59 +856,24 @@ async def analyze_data(request: Request):
 
 
 def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
-    """
-    Runs the LLM agent and executes code.
-    - Tries up to 3 API keys (one per attempt) if quota errors occur.
-    - If pickle_path is provided, injects that DataFrame directly.
-    - If no pickle_path, falls back to scraping when needed.
-    """
     try:
-        max_retries = min(3, len(GEMINI_KEYS))  # up to 3 keys, or less if fewer provided
+        llm.call_count = 0
+        max_retries = 3
         raw_out = ""
-        quota_error_detected = False
 
-        for attempt in range(max_retries):
-            key = GEMINI_KEYS[attempt]   # pick a new key each retry
-            model = MODEL_HIERARCHY[0]  # always start with primary model
+        # NEW: Initialize callback handler
+        callback_handler = ApiCallCounter(llm_wrapper=llm)
 
-            logger.info(f"🔑 Attempt {attempt+1} using key index {attempt}")
-
-            try:
-                llm = ChatGoogleGenerativeAI(
-                    model=model,
-                    temperature=0,
-                    google_api_key=key
-                )
-                agent = create_tool_calling_agent(llm=llm, tools=[scrape_url_to_dataframe], prompt=prompt)
-                local_executor = AgentExecutor(
-                    agent=agent,
-                    tools=[scrape_url_to_dataframe],
-                    verbose=True,
-                    max_iterations=3,
-                    early_stopping_method="generate",
-                    handle_parsing_errors=True,
-                    return_intermediate_steps=False,
-                )
-
-                response = local_executor.invoke({"input": llm_input}, {"timeout": LLM_TIMEOUT_SECONDS})
-                raw_out = response.get("output") or response.get("final_output") or response.get("text") or ""
-
-                msg_lower = raw_out.lower() if raw_out else ""
-                quota_error_detected = any(qk in msg_lower for qk in QUOTA_KEYWORDS)
-
-                if raw_out and not quota_error_detected:
-                    break  # success!
-
-            except Exception as e:
-                msg = str(e).lower()
-                quota_error_detected = any(qk in msg for qk in QUOTA_KEYWORDS)
-                logger.warning(f"Attempt {attempt+1} failed with error: {msg}")
-                time.sleep(1 * (attempt+1))
-
+        for attempt in range(1, max_retries + 1):
+            response = agent_executor.invoke(
+                {"input": llm_input},
+                config={"callbacks": [callback_handler]}  # Pass callback here
+            )
+            raw_out = response.get("output") or response.get("final_output") or response.get("text") or ""
+            if raw_out:
+                break
         if not raw_out:
-            return {"error": f"Agent returned no output after {max_retries} attempts with different keys"}
-        if quota_error_detected:
-            return {"error": f"Quota/rate-limit error after {max_retries} keys. Last output: {raw_out}"}
+            return {"error": f"Agent returned no output after {max_retries} attempts"}
 
         parsed = clean_llm_output(raw_out)
         if "error" in parsed:
@@ -992,7 +885,6 @@ def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
         code = parsed["code"]
         questions = parsed["questions"]
 
-        # handle scrape if needed
         if pickle_path is None:
             urls = re.findall(r"scrape_url_to_dataframe\(\s*['\"](.*?)['\"]\s*\)", code)
             if urls:
@@ -1012,14 +904,9 @@ def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
 
         results_dict = exec_result.get("result", {})
         output = {q: results_dict.get(q, "Answer not found") for q in questions}
-        if (
-            isinstance(results_dict, dict)
-            and len(results_dict) == len(questions)
-            and all(v == "Answer not found" for v in output.values())
-        ):
+        if isinstance(results_dict, dict) and len(results_dict) == len(questions) and all(v == "Answer not found" for v in output.values()):
             values = list(results_dict.values())
             output = {q: values[i] for i, q in enumerate(questions)}
-
         return output
 
     except Exception as e:
@@ -1145,6 +1032,16 @@ def _system_info():
         info["tmp_free_gb"] = round(shutil.disk_usage(tempfile.gettempdir()).free / 1024**3, 2)
     except Exception:
         info["tmp_free_gb"] = None
+    # GPU quick probe (if torch installed)
+    try:
+        import torch
+        info["torch_installed"] = True
+        info["cuda_available"] = torch.cuda.is_available()
+        if torch.cuda.is_available():
+            info["cuda_device_name"] = torch.cuda.get_device_name(0)
+    except Exception:
+        info["torch_installed"] = False
+        info["cuda_available"] = False
     return info
 
 def _temp_write_test():
@@ -1310,6 +1207,19 @@ async def check_duckdb():
     except Exception as e:
         return {"duckdb_error": str(e)}
 
+async def check_playwright():
+    try:
+        from playwright.async_api import async_playwright
+        async with async_playwright() as p:
+            b = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+            page = await b.new_page()
+            await page.goto("about:blank")
+            ua = await page.evaluate("() => navigator.userAgent")
+            await b.close()
+            return {"playwright_ok": True, "ua": ua[:200]}
+    except Exception as e:
+        return {"playwright_error": str(e)}
+
 # ---- Final /diagnose route (concurrent) ----
 from fastapi import Query
 
@@ -1338,6 +1248,7 @@ async def diagnose(full: bool = Query(False, description="If true, run extended 
 
     if full or RUN_LONGER_CHECKS:
         tasks["duckdb"] = asyncio.create_task(check_duckdb())
+        tasks["playwright"] = asyncio.create_task(check_playwright())
 
     # run all concurrently, collect results
     results = {}
