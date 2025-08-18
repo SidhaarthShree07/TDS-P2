@@ -674,16 +674,19 @@ async def analyze_data(request: Request):
                 base64_image = base64.b64encode(content).decode('utf-8')
 
                 llm_rules = (
-                    "You are a data analyst agent. You will be provided with an image of a chart or table and a set of questions.\n"
-                    "Your task is to respond with a single JSON object containing Python code to answer those questions.\n"
-                    "Rules:\n"
-                    "- The image is your ONLY source of data. You must extract all relevant numbers and names from it.\n"
-                    "- Your Python code MUST start by creating a pandas DataFrame from the data you extract from the image.\n"
-                    "- **Hardcode the extracted data directly into your Python script.** Use lists or a dictionary to represent the data, as it is non-tabular.\n"
-                    "- The code must use this DataFrame to perform all calculations and generate plots.\n"
-                    "- The output JSON must contain the exact question strings and a single `code` string.\n"
-                    "- All plots must use the `plot_to_base64()` helper function.\n"
-                    "- Do not make up any data. If a value is unreadable, you must leave it out or report it as missing.\n"
+                    "You are an expert data analyst agent with multimodal capabilities. Your task is to analyze a provided image and generate Python code to answer a series of questions. The image contains all the data you need.\n"
+                    "\n"
+                    "Your response MUST be a single JSON object containing two keys: `questions` (a list of the original questions) and `code` (a single string of Python code).\n"
+                    "\n"
+                    "The Python code must adhere to the following strict requirements:\n"
+                    "1.  **DATA EXTRACTION:** Start the code by defining a dictionary or list of dictionaries named `extracted_data` that meticulously holds every single data point (e.g., names, labels, values) you can accurately read from the image. Do NOT make up any data. If a value is unreadable, it must be represented as `None`.\n"
+                    "2.  **DATAFRAME CREATION:** Immediately after, create a pandas DataFrame named `df` from this `extracted_data` object.\n"
+                    "3.  **ANALYSIS:** Use the `df` DataFrame to answer all the questions.\n"
+                    "4.  **OUTPUT:** Store all answers in a dictionary named `results`, with the original question strings as keys.\n"
+                    "5.  **PLOTTING:** For any question requiring a plot, use `matplotlib.pyplot` and call the helper function `plot_to_base64()` to return the plot as a base64 string.\n"
+                    "\n"
+                    "DO NOT try to call external tools or import any other libraries besides those strictly needed for the analysis (pandas, numpy, matplotlib, etc.).\n"
+                    "The code must be self-contained and runnable without any external dependencies other than the standard libraries.\n"
                 )
 
                 llm_input = [
