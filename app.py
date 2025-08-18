@@ -671,7 +671,6 @@ async def analyze_data(request: Request):
 
             elif filename.endswith((".png", ".jpg", ".jpeg")):
                 is_image_upload = True
-                # No OCR needed, pass image directly to LLM
                 base64_image = base64.b64encode(content).decode('utf-8')
 
                 llm_rules = (
@@ -680,14 +679,15 @@ async def analyze_data(request: Request):
                     "a valid JSON object containing Python code to answer the questions.\n"
                     "Rules:\n"
                     "- The image contains all the data you need. Do not try to fetch external data or call any tools.\n"
-                    "- Your code should directly answer the questions based on your analysis of the image.\n"
+                    "- Your code must **create a pandas DataFrame from the data you extract from the image**.\n"
+                    "- **Hardcode the extracted data directly into your Python script** (e.g., using a list of dictionaries or a numpy array).\n"
+                    "- Your code should then use this DataFrame to perform all calculations and plotting to answer the questions.\n"
                     "- Your code should use the `results` dictionary to store answers, keyed by the exact question strings.\n"
                     "- For any questions asking for a plot, use the `plot_to_base64()` helper function.\n"
-                    "- IMPORTANT: Since there is no DataFrame provided, your code must create one from the data you extract from the image.\n"
                     "- Assume the necessary libraries (pandas, numpy, matplotlib, etc.) are available.\n"
                     "- Be extremely careful to correctly extract all data points (e.g., names, numbers) from the image.\n"
                 )
-                
+
                 llm_input = [
                     HumanMessage(content=[
                         {"type": "text", "text": f"{llm_rules}\nQuestions:\n{raw_questions}\n\nRespond with the JSON object only."},
