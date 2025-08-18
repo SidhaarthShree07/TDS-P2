@@ -677,7 +677,6 @@ async def analyze_data(request: Request):
             
             elif filename.endswith((".png", ".jpg", ".jpeg")):
                 is_image_upload = True
-                content = await data_file.read()
                 
                 # Normalize image type to JPEG if it's PNG
                 mime_type = "image/png" if filename.endswith(".png") else "image/jpeg"
@@ -689,6 +688,8 @@ async def analyze_data(request: Request):
                 
                 # Convert image to raw base64 (no prefix)
                 base64_image = base64.b64encode(content).decode('utf-8')
+                print(content)
+                print(base64_image)
                 questions_text = raw_questions.strip()
                 
                 # Prompt rules for Gemini
