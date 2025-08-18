@@ -674,10 +674,9 @@ async def analyze_data(request: Request):
                     "Respond with the JSON object only."
                 )
             
-            
             elif filename.endswith((".png", ".jpg", ".jpeg")):
                 is_image_upload = True
-                
+            
                 # Normalize image type to JPEG if it's PNG
                 mime_type = "image/png" if filename.endswith(".png") else "image/jpeg"
                 if PIL_AVAILABLE and filename.endswith(".png"):
@@ -685,11 +684,11 @@ async def analyze_data(request: Request):
                     Image.open(BytesIO(content)).convert('RGB').save(img_buffer, 'JPEG')
                     content = img_buffer.getvalue()
                     mime_type = "image/jpeg"  # only override here
-                
+            
                 # Convert image to raw base64 (no prefix)
                 base64_image = base64.b64encode(content).decode('utf-8')
                 questions_text = raw_questions.strip()
-                
+            
                 # Prompt rules for Gemini
                 llm_rules = (
                     "You are an expert data analyst agent with multimodal capabilities. "
@@ -709,14 +708,14 @@ async def analyze_data(request: Request):
                     "`plot_to_base64()` to convert plots to base64 strings.\n\n"
                     "Return ONLY valid JSON with no explanations, no markdown, and no text outside the JSON."
                 )
-                
+            
                 # API key check
                 api_key = os.getenv("gemini_api_3")
                 if not api_key:
                     raise HTTPException(500, "Gemini API key not found in environment variables.")
-                
+            
                 headers = {"Content-Type": "application/json"}
-                
+            
                 # Gemini expects text + inline_data inside parts (no "type": "image")
                 payload = {
                     "contents": [
@@ -733,9 +732,9 @@ async def analyze_data(request: Request):
                         }
                     ]
                 }
-                                        
+            
                 api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-                
+            
                 try:
                     response = requests.post(api_url, headers=headers, json=payload, timeout=LLM_TIMEOUT_SECONDS)
                     print("✅ Status:", response.status_code)
@@ -760,22 +759,33 @@ async def analyze_data(request: Request):
                     raise HTTPException(500, detail=f"Failed to call Gemini API: {str(e)}")
                 except (KeyError, IndexError) as e:
                     raise HTTPException(500, detail=f"Invalid response from Gemini API: {str(e)}")
-                
-                # Clean LLM output (your own function)
-                parsed = clean_llm_output(raw_out)
-                if "error" in parsed:
-                    raise HTTPException(500, detail=parsed["error"])
-                
+            
+                # --- FIX: strip markdown fences before parsing ---
+                raw_clean = raw_out.strip()
+                if raw_clean.startswith("```"):
+                    raw_clean = raw_clean.strip("`")
+                    if raw_clean.lower().startswith("json"):
+                        raw_clean = raw_clean[4:].strip()
+                    if raw_clean.endswith("```"):
+                        raw_clean = raw_clean[:-3].strip()
+            
+                # Parse JSON
+                try:
+                    parsed = json.loads(raw_clean)
+                except Exception as e:
+                    raise HTTPException(500, detail=f"Could not parse JSON output: {e}")
+            
                 code = parsed["code"]
                 questions = parsed["questions"]
-                
+            
                 # Execute generated code
                 exec_result = write_and_run_temp_python(code=code, questions=questions, timeout=LLM_TIMEOUT_SECONDS)
                 if exec_result.get("status") != "success":
                     raise HTTPException(500, detail=f"Execution failed: {exec_result.get('message')}")
-                
+            
                 result = exec_result.get("result", {})
                 return JSONResponse(content=result)
+
 
         
         else:
