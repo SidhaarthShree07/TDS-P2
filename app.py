@@ -674,22 +674,23 @@ async def analyze_data(request: Request):
                     "Respond with the JSON object only."
                 )
             
-
+            
             elif filename.endswith((".png", ".jpg", ".jpeg")):
                 is_image_upload = True
                 content = await data_file.read()
                 
-                # Use PIL to normalize image type to jpeg if it's png
+                # Normalize image type to JPEG if it's PNG
                 mime_type = "image/jpeg"
                 if PIL_AVAILABLE and filename.endswith(".png"):
                     img_buffer = BytesIO()
                     Image.open(BytesIO(content)).convert('RGB').save(img_buffer, 'JPEG')
                     content = img_buffer.getvalue()
                 
+                # Convert image to raw base64 (no prefix)
                 base64_image = base64.b64encode(content).decode('utf-8')
                 questions_text = raw_questions.strip()
                 
-                # Prepare the prompt and image data in the native Gemini API format
+                # Prompt rules for Gemini
                 llm_rules = (
                     "You are an expert data analyst agent with multimodal capabilities. "
                     "You will analyze a provided image and generate Python code to answer a series of questions. "
@@ -709,15 +710,14 @@ async def analyze_data(request: Request):
                     "Return ONLY valid JSON with no explanations, no markdown, and no text outside the JSON."
                 )
                 
-                # Make a direct call to the Gemini API using requests
-                api_key = os.getenv("gemini_api_3") # Use the first available key
+                # API key check
+                api_key = os.getenv("gemini_api_3")
                 if not api_key:
                     raise HTTPException(500, "Gemini API key not found in environment variables.")
-
-                headers = {
-                    "Content-Type": "application/json"
-                }
                 
+                headers = {"Content-Type": "application/json"}
+                
+                # Gemini expects text + inline_data inside parts (no "type": "image")
                 payload = {
                     "contents": [
                         {
@@ -743,17 +743,20 @@ async def analyze_data(request: Request):
                     response = requests.post(api_url, headers=headers, json=payload, timeout=LLM_TIMEOUT_SECONDS)
                     response.raise_for_status()
                     resp_json = response.json()
+            
+                    # Collect all text parts from the first candidate
                     try:
                         parts = resp_json["candidates"][0]["content"]["parts"]
                         raw_out = "".join([p.get("text", "") for p in parts if "text" in p])
                     except (KeyError, IndexError) as e:
-                        raise HTTPException(500, detail=f"Invalid response format: {resp_json}")
-
+                        raise HTTPException(500, detail=f"Invalid response format: {json.dumps(resp_json)}")
+            
                 except requests.exceptions.RequestException as e:
                     raise HTTPException(500, detail=f"Failed to call Gemini API: {str(e)}")
                 except (KeyError, IndexError) as e:
                     raise HTTPException(500, detail=f"Invalid response from Gemini API: {str(e)}")
-
+                
+                # Clean LLM output (your own function)
                 parsed = clean_llm_output(raw_out)
                 if "error" in parsed:
                     raise HTTPException(500, detail=parsed["error"])
@@ -761,11 +764,13 @@ async def analyze_data(request: Request):
                 code = parsed["code"]
                 questions = parsed["questions"]
                 
+                # Execute generated code
                 exec_result = write_and_run_temp_python(code=code, questions=questions, timeout=LLM_TIMEOUT_SECONDS)
                 if exec_result.get("status") != "success":
                     raise HTTPException(500, detail=f"Execution failed: {exec_result.get('message')}")
                 
                 result = exec_result.get("result", {})
+
         
         else:
             # No data file uploaded, assume web scraping is needed
