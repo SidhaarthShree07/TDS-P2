@@ -609,6 +609,7 @@ async def analyze_data(request: Request):
         df_preview = ""
         dataset_uploaded = False
 
+        ocr_df_mode = False
         if data_file:
             dataset_uploaded = True
             filename = data_file.filename.lower()
@@ -657,7 +658,7 @@ async def analyze_data(request: Request):
                         })
                     df = pd.DataFrame(rows)
                     # Mark that the dataset originates from OCR
-                    df.__dict__["_is_ocr_df"] = True  # lightweight marker for local use
+                    ocr_df_mode = True
                 except HTTPException:
                     raise
                 except Exception as e:
@@ -682,7 +683,7 @@ async def analyze_data(request: Request):
             # Extra guidance if this is OCR-structured data
             ocr_hint = ""
             try:
-                if set(map(str, df.columns)).issuperset({"type", "key", "value"}):
+                if ocr_df_mode and set(map(str, df.columns)).issuperset({"type", "key", "value"}):
                     ocr_hint = (
                         "\nOCR-specific guidance:\n"
                         "- The DataFrame comes from OCR and has rows with a `type` column among: full_text, paragraph, kv, table.\n"
@@ -690,6 +691,7 @@ async def analyze_data(request: Request):
                         "- For `table` rows, parse JSON in `table_columns` and `table_rows` to reconstruct tables: \n"
                         "    `cols = json.loads(row['table_columns'])`; `rows = json.loads(row['table_rows'])`.\n"
                         "- Use only this DataFrame for computations and charting; do not fetch external data.\n"
+                        "- If no table is present in the OCR rows, use key/value pairs and/or parse numeric tokens from `paragraph` and `full_text` rows.\n"
                     )
             except Exception:
                 pass
@@ -715,6 +717,7 @@ async def analyze_data(request: Request):
                 "3) For plots: use plot_to_base64() helper to return base64 image data under 100kB.\n"
             )
 
+        # Preserve original request format; only add OCR guidance when the uploaded file is an image
         llm_input = (
             f"{llm_rules}\nQuestions:\n{raw_questions}\n"
             f"{df_preview if df_preview else ''}"
@@ -737,6 +740,27 @@ async def analyze_data(request: Request):
                     logger.error("Agent raw output: %s", str(result.get("raw"))[:3000])
             except Exception:
                 pass
+            # Fallback: if OCR input and agent failed, return safe mapping with OCR summary
+            if ocr_df_mode:
+                ocr_summary = "OCR data available but LLM failed"
+                try:
+                    # Attempt to include a compact summary from earlier logs if available
+                    if 'ocr' in locals():
+                        from ocr_extractor import to_readable_summary
+                        ocr_summary = to_readable_summary(ocr)[:1000]
+                except Exception:
+                    pass
+                # Build mapping from questions list in the uploaded file (keys_list not the same as questions)
+                try:
+                    # Use the original raw_questions as fallback source of questions lines
+                    qs = [q.strip() for q in raw_questions.splitlines() if q.strip() and not q.strip().startswith('- ')]
+                    if not qs:
+                        qs = ["Question 1"]
+                except Exception:
+                    qs = ["Question 1"]
+                safe = {q: f"Unable to answer due to LLM error. {ocr_summary}" for q in qs}
+                return JSONResponse(content=safe)
+            # Non-OCR: keep current behavior
             raise HTTPException(500, detail=result["error"])
 
         # Post-process key mapping & type casting (robust, generic, with index fallback)
