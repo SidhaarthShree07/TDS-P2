@@ -848,20 +848,34 @@ async def analyze_data(request: Request):
 def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
     """
     Runs the LLM agent and executes code.
-    - Retries up to 3 times if agent returns no output.
+    - Retries up to 3 times if agent returns no output or if quota errors (429, quota exceeded, rate limit).
     - If pickle_path is provided, injects that DataFrame directly.
     - If no pickle_path, falls back to scraping when needed.
     """
     try:
         max_retries = 3
         raw_out = ""
+        quota_error_detected = False
+
         for attempt in range(1, max_retries + 1):
             response = agent_executor.invoke({"input": llm_input}, {"timeout": LLM_TIMEOUT_SECONDS})
             raw_out = response.get("output") or response.get("final_output") or response.get("text") or ""
-            if raw_out:
+            
+            # Normalize to lowercase for keyword detection
+            msg_lower = raw_out.lower() if raw_out else ""
+            quota_error_detected = any(qk in msg_lower for qk in QUOTA_KEYWORDS)
+
+            if raw_out and not quota_error_detected:
+                # Got valid output, stop retrying
                 break
+            else:
+                logger.warning(f"Attempt {attempt} failed (quota error or empty). Retrying...")
+                time.sleep(1)  # small backoff
+
         if not raw_out:
             return {"error": f"Agent returned no output after {max_retries} attempts"}
+        if quota_error_detected:
+            return {"error": f"Quota/rate-limit error after {max_retries} attempts: {raw_out}"}
 
         parsed = clean_llm_output(raw_out)
         if "error" in parsed:
@@ -891,9 +905,7 @@ def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
             return {"error": f"Execution failed: {exec_result.get('message')}", "raw": exec_result.get("raw")}
 
         results_dict = exec_result.get("result", {})
-        # First try mapping by key
         output = {q: results_dict.get(q, "Answer not found") for q in questions}
-        # If all are 'Answer not found' and lengths match, map by index
         if (
             isinstance(results_dict, dict)
             and len(results_dict) == len(questions)
