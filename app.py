@@ -90,7 +90,7 @@ class LLMWithFallback:
         self.slow_keys_log = defaultdict(list)
         self.failing_keys_log = defaultdict(int)
 
-    def get_llm_instance(self, model_name=None):
+    def _get_llm_instance(self, model_name=None):
         if model_name:
             for key in self.keys:
                 try:
@@ -119,7 +119,7 @@ class LLMWithFallback:
         raise RuntimeError(f"All models/keys failed. Last error: {last_error}")
 
     def invoke(self, prompt, model_name=None):
-        llm_instance = self.get_llm_instance(model_name)
+        llm_instance = self._get_llm_instance(model_name)
         return llm_instance.invoke(prompt)
 
     # Required by LangChain agent
