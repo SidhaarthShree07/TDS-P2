@@ -152,6 +152,44 @@ def parse_keys_and_types(raw_questions: str):
     keys_list = [k for k, _ in matches]
     return keys_list, type_map
 
+def call_aiproxy(prompt: str, model: str = "gpt-4o-mini", timeout: int = 60) -> str:
+    """
+    Calls AIProxy (OpenAI-compatible) at https://aiproxy.sanand.workers.dev/
+    Uses AIPROXY_API_KEY from environment.
+    """
+    api_key = os.getenv("AIPROXY_API_KEY")
+    if not api_key:
+        raise HTTPException(500, "AIProxy API key not configured. Set AIPROXY_API_KEY.")
+
+    url = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a careful data analyst. Follow the user's rules exactly and return ONLY valid JSON."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+    }
+
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        if not resp.ok:
+            raise HTTPException(resp.status_code, f"AIProxy error: {resp.text}")
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]
+    except requests.Timeout:
+        raise HTTPException(504, f"AIProxy timeout after {timeout}s")
+    except Exception as e:
+        raise HTTPException(502, f"AIProxy call failed: {e}")
 
 
 
@@ -775,24 +813,65 @@ async def analyze_data(request: Request):
 
         if is_image_upload == False:
             import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as ex:
-                fut = ex.submit(run_agent_safely_unified, llm_input, pickle_path)
-                try:
-                    result = fut.result(timeout=LLM_TIMEOUT_SECONDS)
-                except concurrent.futures.TimeoutError:
-                    logger.error("Processing timeout in agent execution")
-                    raise HTTPException(408, "Processing timeout")
+
+            # Branch 1: DATASET PRESENT (pickle_path set) → keep your Gemini path EXACTLY as-is
+            if pickle_path:
+                with concurrent.futures.ThreadPoolExecutor() as ex:
+                    fut = ex.submit(run_agent_safely_unified, llm_input, pickle_path)
+                    try:
+                        result = fut.result(timeout=LLM_TIMEOUT_SECONDS)
+                    except concurrent.futures.TimeoutError:
+                        logger.error("Processing timeout in agent execution")
+                        raise HTTPException(408, "Processing timeout")
+
+            # Branch 2: NO DATASET → use AIProxy, but still do code-exec locally
+            else:
+                def _aiproxy_job():
+                    raw_out = call_aiproxy(llm_input, timeout=LLM_TIMEOUT_SECONDS)
+                    parsed = clean_llm_output(raw_out)
+                    if "error" in parsed:
+                        return {"error": parsed["error"]}
+
+                    if "code" not in parsed or "questions" not in parsed:
+                        return {"error": f"Invalid agent response: {parsed}"}
+
+                    code = parsed["code"]
+                    questions = parsed["questions"]
+
+                    exec_result = write_and_run_temp_python(
+                        code, injected_pickle=None, timeout=LLM_TIMEOUT_SECONDS
+                    )
+                    if exec_result.get("status") != "success":
+                        return {"error": f"Execution failed: {exec_result.get('message')}", "raw": exec_result.get("raw")}
+
+                    results_dict = exec_result.get("result", {})
+                    output = {q: results_dict.get(q, "Answer not found") for q in questions}
+                    if (
+                        isinstance(results_dict, dict)
+                        and len(results_dict) == len(questions)
+                        and all(v == "Answer not found" for v in output.values())
+                    ):
+                        values = list(results_dict.values())
+                        output = {q: values[i] for i, q in enumerate(questions)}
+                    return output
+
+                with concurrent.futures.ThreadPoolExecutor() as ex:
+                    fut = ex.submit(_aiproxy_job)
+                    try:
+                        result = fut.result(timeout=LLM_TIMEOUT_SECONDS)
+                    except concurrent.futures.TimeoutError:
+                        logger.error("AIProxy processing timeout")
+                        raise HTTPException(408, "Processing timeout")
 
             logger.info(f"Agent result: {result}")
 
             if "error" in result:
                 logger.error(f"Agent returned error: {result['error']}")
                 raise HTTPException(500, detail=result["error"])
-    
-            # Post-process key mapping & type casting (robust, generic, with index fallback)
+
+            # Post-process key mapping & type casting (unchanged)
             if keys_list and type_map:
                 mapped = {}
-                # If result is a dict and all keys match, map by key
                 if isinstance(result, dict) and all(k in result for k in keys_list):
                     for key in keys_list:
                         val = result.get(key, None)
@@ -805,7 +884,6 @@ async def analyze_data(request: Request):
                             logger.warning(f"Type casting failed for key {key} with value {val}")
                             mapped[key] = val
                     result = mapped
-                # If result is a dict and lengths match, map by index (fallback)
                 elif isinstance(result, dict) and len(result) == len(keys_list):
                     result_values = list(result.values())
                     for idx, key in enumerate(keys_list):
@@ -819,7 +897,6 @@ async def analyze_data(request: Request):
                             logger.warning(f"Type casting failed for key {key} with value {val}")
                             mapped[key] = val
                     result = mapped
-                # If result is a list and length matches, map by index
                 elif isinstance(result, list) and len(result) == len(keys_list):
                     for idx, key in enumerate(keys_list):
                         val = result[idx]
@@ -832,7 +909,6 @@ async def analyze_data(request: Request):
                             logger.warning(f"Type casting failed for key {key} with value {val}")
                             mapped[key] = val
                     result = mapped
-                # Otherwise, do not map, just return the raw result (prevents all 'Answer not found')
 
             logger.info(f"Final result returned: {result}")
             return JSONResponse(content=result)
