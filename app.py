@@ -832,7 +832,15 @@ async def analyze_data(request: Request):
                     if "code" not in parsed or "questions" not in parsed:
                         return {"error": f"Invalid agent response: {parsed}"}
 
+                    # --- inline sanitize step for AI Pipe only ---
                     code = parsed["code"]
+                    if code:
+                        code = code.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
+                        # strip out invisible unicode chars like zero-width spaces
+                        import re
+                        code = re.sub(r"[\u200b-\u200f\u202a-\u202e]", "", code)
+                    # ---------------------------------------------
+
                     questions = parsed["questions"]
 
                     exec_result = write_and_run_temp_python(
