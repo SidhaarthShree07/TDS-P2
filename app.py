@@ -702,22 +702,21 @@ async def analyze_data(request: Request):
                     raise HTTPException(500, detail=f"Failed to call Gemini API: {str(e)}")
             
                 # --- CLEANING FIX ---
-                import re
                 raw_clean = raw_out.strip()
-                # Remove leading/trailing fences
-                raw_clean = re.sub(r"^```[a-zA-Z]*\n?", "", raw_clean)
-                raw_clean = re.sub(r"```$", "", raw_clean).strip()
-            
+                if raw_clean.startswith("```"):
+                    raw_clean = raw_clean.strip("`")
+                    if raw_clean.lower().startswith("json"):
+                        raw_clean = raw_clean[4:].strip()
+                    if raw_clean.endswith("```"):
+                        raw_clean = raw_clean[:-3].strip()
+                # Parse JSON
                 try:
                     parsed = json.loads(raw_clean)
-                    # sanitize code to avoid weird unicode variable names
-                    if "code" in parsed:
-                        parsed["code"] = re.sub(r"[^\x00-\x7F]+", "_", parsed["code"])
                 except Exception as e:
                     raise HTTPException(500, detail=f"Could not parse JSON output: {e}")
-            
-                code = parsed.get("code", "")
-                questions = parsed.get("questions", [])
+
+                code = parsed["code"]
+                questions = parsed["questions"]
             
                 # Execute generated code
                 exec_result = write_and_run_temp_python(code=code, questions=questions, timeout=LLM_TIMEOUT_SECONDS)
