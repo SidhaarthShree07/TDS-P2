@@ -661,7 +661,6 @@ async def analyze_data(request: Request):
             
                 headers = {"Content-Type": "application/json"}
             
-                # Gemini expects text + inline_data inside parts (no "type": "image")
                 payload = {
                     "contents": [
                         {
@@ -678,7 +677,7 @@ async def analyze_data(request: Request):
                     ]
                 }
             
-                api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+                api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key={api_key}"
             
                 try:
                     response = requests.post(api_url, headers=headers, json=payload, timeout=LLM_TIMEOUT_SECONDS)
@@ -688,40 +687,37 @@ async def analyze_data(request: Request):
                         try:
                             print(json.dumps(response.json(), indent=2))
                         except Exception:
-                            print(response.text)  # fallback if it's not JSON
+                            print(response.text)
                         response.raise_for_status()
                     resp_json = response.json()
                     print("🔎 Raw response JSON:")
                     print(json.dumps(resp_json, indent=2))
-                    # Collect all text parts from the first candidate
                     try:
                         parts = resp_json["candidates"][0]["content"]["parts"]
                         raw_out = "".join([p.get("text", "") for p in parts if "text" in p])
-                    except (KeyError, IndexError) as e:
+                    except (KeyError, IndexError):
                         raise HTTPException(500, detail=f"Invalid response format: {json.dumps(resp_json)}")
             
                 except requests.exceptions.RequestException as e:
                     raise HTTPException(500, detail=f"Failed to call Gemini API: {str(e)}")
-                except (KeyError, IndexError) as e:
-                    raise HTTPException(500, detail=f"Invalid response from Gemini API: {str(e)}")
             
-                # --- FIX: strip markdown fences before parsing ---
+                # --- CLEANING FIX ---
+                import re
                 raw_clean = raw_out.strip()
-                if raw_clean.startswith("```"):
-                    raw_clean = raw_clean.strip("`")
-                    if raw_clean.lower().startswith("json"):
-                        raw_clean = raw_clean[4:].strip()
-                    if raw_clean.endswith("```"):
-                        raw_clean = raw_clean[:-3].strip()
+                # Remove leading/trailing fences
+                raw_clean = re.sub(r"^```[a-zA-Z]*\n?", "", raw_clean)
+                raw_clean = re.sub(r"```$", "", raw_clean).strip()
             
-                # Parse JSON
                 try:
                     parsed = json.loads(raw_clean)
+                    # sanitize code to avoid weird unicode variable names
+                    if "code" in parsed:
+                        parsed["code"] = re.sub(r"[^\x00-\x7F]+", "_", parsed["code"])
                 except Exception as e:
                     raise HTTPException(500, detail=f"Could not parse JSON output: {e}")
             
-                code = parsed["code"]
-                questions = parsed["questions"]
+                code = parsed.get("code", "")
+                questions = parsed.get("questions", [])
             
                 # Execute generated code
                 exec_result = write_and_run_temp_python(code=code, questions=questions, timeout=LLM_TIMEOUT_SECONDS)
