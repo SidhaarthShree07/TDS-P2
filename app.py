@@ -727,7 +727,7 @@ async def analyze_data(request: Request):
                 ]
                 
                 llm = LLMWithFallback()
-                gemini_vision_model = llm.get_llm_instance(model_name="gemini-pro-vision")
+                gemini_vision_model = llm._get_llm_instance(model_name="gemini-pro-vision")
                 
                 response = gemini_vision_model.invoke(contents)
                 raw_out = response.content
