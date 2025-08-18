@@ -680,7 +680,7 @@ async def analyze_data(request: Request):
                 content = await data_file.read()
                 
                 # Normalize image type to JPEG if it's PNG
-                mime_type = "image/jpeg"
+                mime_type = "image/png" if filename.endswith(".png") else "image/jpeg"
                 if PIL_AVAILABLE and filename.endswith(".png"):
                     img_buffer = BytesIO()
                     Image.open(BytesIO(content)).convert('RGB').save(img_buffer, 'JPEG')
