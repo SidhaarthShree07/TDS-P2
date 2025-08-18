@@ -37,18 +37,19 @@ try:
 except Exception:
     PIL_AVAILABLE = False
 
-# OCR structured extractor
-try:
-    from ocr_extractor import ocr_extract_bytes, to_readable_summary
-    OCR_AVAILABLE = True
-except Exception:
-    OCR_AVAILABLE = False
+# OCR structured extractor - REMOVED
+# try:
+#     from ocr_extractor import ocr_extract_bytes, to_readable_summary
+#     OCR_AVAILABLE = True
+# except Exception:
+#     OCR_AVAILABLE = False
 
 # LangChain / LLM imports (keep as you used)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
 from langchain.agents import create_tool_calling_agent, AgentExecutor
+from langchain_core.messages import HumanMessage
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -155,8 +156,6 @@ def parse_keys_and_types(raw_questions: str):
     type_map = {key: type_map_def.get(t.lower(), str) for key, t in matches}
     keys_list = [k for k, _ in matches]
     return keys_list, type_map
-
-
 
 
 # -----------------------------
@@ -618,123 +617,42 @@ async def analyze_data(request: Request):
         pickle_path = None
         df_preview = ""
         dataset_uploaded = False
+        llm_input = None # New variable to hold multimodal input
 
-        ocr_df_mode = False
+        is_image_upload = False
+
         if data_file:
             dataset_uploaded = True
             filename = data_file.filename.lower()
             content = await data_file.read()
             from io import BytesIO
 
-            if filename.endswith(".csv"):
-                df = pd.read_csv(BytesIO(content))
-            elif filename.endswith((".xlsx", ".xls")):
-                df = pd.read_excel(BytesIO(content))
-            elif filename.endswith(".parquet"):
-                df = pd.read_parquet(BytesIO(content))
-            elif filename.endswith(".json"):
-                try:
-                    df = pd.read_json(BytesIO(content))
-                except ValueError:
-                    df = pd.DataFrame(json.loads(content.decode("utf-8")))
-            elif filename.endswith(".png") or filename.endswith(".jpg") or filename.endswith(".jpeg"):
-                try:
-                    if not OCR_AVAILABLE:
-                        raise HTTPException(500, "OCR module not available. Ensure ocr_extractor.py is present and dependencies installed.")
-                    
-                    # Structured OCR
-                    ocr_lang = os.getenv("OCR_LANG", "eng")
-                    ocr = ocr_extract_bytes(content, lang=ocr_lang)
-                    
-                    # Log full structured OCR for debugging (trim to avoid huge logs)
+            if filename.endswith((".csv", ".xlsx", ".xls", ".parquet", ".json")):
+                # This block handles tabular data files
+                if filename.endswith(".csv"):
+                    df = pd.read_csv(BytesIO(content))
+                elif filename.endswith((".xlsx", ".xls")):
+                    df = pd.read_excel(BytesIO(content))
+                elif filename.endswith(".parquet"):
+                    df = pd.read_parquet(BytesIO(content))
+                elif filename.endswith(".json"):
                     try:
-                        logger.info("OCR structured result: %s", json.dumps(ocr, ensure_ascii=False)[:5000])
-                        logger.info("OCR summary:\n%s", to_readable_summary(ocr))
-                    except Exception:
-                        pass
+                        df = pd.read_json(BytesIO(content))
+                    except ValueError:
+                        df = pd.DataFrame(json.loads(content.decode("utf-8")))
 
-                    # Normalize into a generic DataFrame usable by LLM code
-                    rows = []
-                    rows.append({"type": "full_text", "key": None, "value": ocr.get("text", "")})
-                    for para in (ocr.get("paragraphs") or []):
-                        rows.append({"type": "paragraph", "key": None, "value": para})
-                    for k, v in (ocr.get("key_values") or {}).items():
-                        rows.append({"type": "kv", "key": k, "value": v})
-                    for i, tbl in enumerate(ocr.get("tables") or []):
-                        rows.append({
-                            "type": "table",
-                            "key": f"table_{i}",
-                            "value": "",
-                            "table_columns": json.dumps(tbl.get("columns", []), ensure_ascii=False),
-                            "table_rows": json.dumps(tbl.get("rows", []), ensure_ascii=False),
-                        })
-                    
-                    # This is where the old, brittle "Heuristic" code was. We've removed it.
-                    
-                    df = pd.DataFrame(rows)
-                    # Mark that the dataset originates from OCR
-                    ocr_df_mode = True
-                except HTTPException:
-                    raise
-                except Exception as e:
-                    raise HTTPException(400, f"Image OCR processing failed: {str(e)}")
-            else:
-                raise HTTPException(400, f"Unsupported data file type: {filename}")
+                # Pickle for injection
+                temp_pkl = tempfile.NamedTemporaryFile(suffix=".pkl", delete=False)
+                temp_pkl.close()
+                df.to_pickle(temp_pkl.name)
+                pickle_path = temp_pkl.name
 
-            # Pickle for injection
-            temp_pkl = tempfile.NamedTemporaryFile(suffix=".pkl", delete=False)
-            temp_pkl.close()
-            df.to_pickle(temp_pkl.name)
-            pickle_path = temp_pkl.name
-
-            df_preview = (
-                f"\n\nThe uploaded dataset has {len(df)} rows and {len(df.columns)} columns.\n"
-                f"Columns: {', '.join(df.columns.astype(str))}\n"
-                f"First rows:\n{df.head(5).to_markdown(index=False)}\n"
-            )
-
-        # Build rules based on data presence
-        if dataset_uploaded:
-            # Extra guidance if this is OCR-structured data. Strengthen instructions to always emit JSON and usable code.
-            ocr_hint = ""
-            try:
-                if ocr_df_mode and set(map(str, df.columns)).issuperset({"type", "key", "value"}):
-                    ocr_hint = (
-                        "\nOCR-specific guidance:\n"
-                        "- The DataFrame comes from OCR and has rows with a `type` column among: full_text, paragraph, kv, table.\n"
-                        "- For `kv` rows, use `key` and `value`.\n"
-                        "- For `table` rows, parse JSON in `table_columns` and `table_rows` to reconstruct tables: \n"
-                        "    `cols = json.loads(row['table_columns'])`; `rows = json.loads(row['table_rows'])`.\n"
-                        "- Use only this DataFrame for computations and charting; do not fetch external data.\n"
-                        "- If no table is present in the OCR rows, use key/value pairs and/or parse numeric tokens from `paragraph` and `full_text` rows.\n"
-                        "- Always return ONLY a valid JSON object with keys `questions` and `code`.\n"
-                        "- Your code MUST define a dict named `results` whose keys are the EXACT question strings provided.\n"
-                        "- Assume `questions` is provided as a Python list of strings and `df` is the OCR DataFrame.\n"
-                    )
-            except Exception:
-                pass
-
-            # Use a stricter, generalized system message when OCR is involved (no image-specific constants)
-            if ocr_df_mode:
-                llm_rules = (
-                    "You are an analytics code generator. Return ONLY a JSON object.\n"
-                    "Rules:\n"
-                    "- You have access to a pandas DataFrame `df` constructed from OCR.\n"
-                    "- `df` has columns `type`, `key`, `value`, `table_columns`, and `table_rows`.\n"
-                    "- Your first step must be to create a new, well-structured DataFrame called `analysis_df` from `df`.\n"
-                    "- To do this, follow these steps in your code:\n"
-                    "    1. Filter `df` for rows where `type == 'kv'` and create a dictionary from the `key` and `value` columns.\n"
-                    "    2. Filter `df` for rows where `type == 'table'`. Parse the JSON from `table_columns` and `table_rows` to create one or more DataFrames.\n"
-                    "    3. Combine data from key-value pairs and tables into a single, clean DataFrame `analysis_df`.\n"
-                    "    4. Use `analysis_df` for all subsequent calculations, filtering, and plotting.\n"
-                    "- DO NOT fetch any external data or call tools.\n"
-                    "- Output JSON must include:\n"
-                    "    'questions': the exact question strings provided;\n"
-                    "    'code': Python that fills a dict named `results` with answers keyed by those exact strings.\n"
-                    "- The code MUST be executable with only pandas/numpy/matplotlib available and helper plot_to_base64().\n"
-                    "- Define all variables you use.\n"
+                df_preview = (
+                    f"\n\nThe uploaded dataset has {len(df)} rows and {len(df.columns)} columns.\n"
+                    f"Columns: {', '.join(df.columns.astype(str))}\n"
+                    f"First rows:\n{df.head(5).to_markdown(index=False)}\n"
                 )
-            else:
+
                 llm_rules = (
                     "Rules:\n"
                     "1) You have access to a pandas DataFrame called `df` and its dictionary form `data`.\n"
@@ -744,9 +662,43 @@ async def analyze_data(request: Request):
                     '   - "questions": [ ... original question strings ... ]\n'
                     '   - "code": "..."  (Python code that fills `results` with exact question strings as keys)\n'
                     "5) For plots: use plot_to_base64() helper to return base64 image data under 100kB.\n"
-                    f"{ocr_hint}"
                 )
+                llm_input = (
+                    f"{llm_rules}\nQuestions:\n{raw_questions}\n"
+                    f"{df_preview}"
+                    "Respond with the JSON object only."
+                )
+
+            elif filename.endswith((".png", ".jpg", ".jpeg")):
+                is_image_upload = True
+                # No OCR needed, pass image directly to LLM
+                base64_image = base64.b64encode(content).decode('utf-8')
+
+                llm_rules = (
+                    "You are a data analyst agent. You will receive an image of a chart or table "
+                    "and a list of questions. Your task is to analyze the image and generate "
+                    "a valid JSON object containing Python code to answer the questions.\n"
+                    "Rules:\n"
+                    "- The image contains all the data you need. Do not try to fetch external data or call any tools.\n"
+                    "- Your code should directly answer the questions based on your analysis of the image.\n"
+                    "- Your code should use the `results` dictionary to store answers, keyed by the exact question strings.\n"
+                    "- For any questions asking for a plot, use the `plot_to_base64()` helper function.\n"
+                    "- IMPORTANT: Since there is no DataFrame provided, your code must create one from the data you extract from the image.\n"
+                    "- Assume the necessary libraries (pandas, numpy, matplotlib, etc.) are available.\n"
+                    "- Be extremely careful to correctly extract all data points (e.g., names, numbers) from the image.\n"
+                )
+                
+                llm_input = [
+                    HumanMessage(content=[
+                        {"type": "text", "text": f"{llm_rules}\nQuestions:\n{raw_questions}\n\nRespond with the JSON object only."},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                    ])
+                ]
+            else:
+                raise HTTPException(400, f"Unsupported data file type: {filename}")
+        
         else:
+            # No data file uploaded, assume web scraping is needed
             llm_rules = (
                 "Rules:\n"
                 "1) If you need web data, CALL scrape_url_to_dataframe(url).\n"
@@ -755,17 +707,16 @@ async def analyze_data(request: Request):
                 '   - "code": "..."  (Python code that fills `results` with exact question strings as keys)\n'
                 "3) For plots: use plot_to_base64() helper to return base64 image data under 100kB.\n"
             )
-
-        # Preserve original request format; only add OCR guidance when the uploaded file is an image
-        llm_input = (
-            f"{llm_rules}\nQuestions:\n{raw_questions}\n"
-            f"{df_preview if df_preview else ''}"
-            "Respond with the JSON object only."
-        )
+            llm_input = (
+                f"{llm_rules}\nQuestions:\n{raw_questions}\n"
+                f"{df_preview if df_preview else ''}"
+                "Respond with the JSON object only."
+            )
 
         # Run agent
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor() as ex:
+            # The function to be called must be `run_agent_safely_unified` to handle multimodal input
             fut = ex.submit(run_agent_safely_unified, llm_input, pickle_path)
             try:
                 result = fut.result(timeout=LLM_TIMEOUT_SECONDS)
@@ -779,27 +730,6 @@ async def analyze_data(request: Request):
                     logger.error("Agent raw output: %s", str(result.get("raw"))[:3000])
             except Exception:
                 pass
-            # Fallback: if OCR input and agent failed, return safe mapping with OCR summary
-            if ocr_df_mode:
-                ocr_summary = "OCR data available but LLM failed"
-                try:
-                    # Attempt to include a compact summary from earlier logs if available
-                    if 'ocr' in locals():
-                        from ocr_extractor import to_readable_summary
-                        ocr_summary = to_readable_summary(ocr)[:1000]
-                except Exception:
-                    pass
-                # Build mapping from questions list in the uploaded file (keys_list not the same as questions)
-                try:
-                    # Use the original raw_questions as fallback source of questions lines
-                    qs = [q.strip() for q in raw_questions.splitlines() if q.strip() and not q.strip().startswith('- ')]
-                    if not qs:
-                        qs = ["Question 1"]
-                except Exception:
-                    qs = ["Question 1"]
-                safe = {q: f"Unable to answer due to LLM error. {ocr_summary}" for q in qs}
-                return JSONResponse(content=safe)
-            # Non-OCR: keep current behavior
             raise HTTPException(500, detail=result["error"])
 
         # Post-process key mapping & type casting (robust, generic, with index fallback)
@@ -1198,7 +1128,7 @@ async def check_llm_keys_models():
         # test keys in parallel for this model
         tasks = []
         for key in _GEMINI_KEYS:
-            tasks.append(run_in_thread(_test_gemini_key_model, key, model, timeout=DIAG_LLM_KEY_TIMEOUT))
+            tasks.append(run_in_thread(_test_gemini_key_model, key, model, ping_text="ping"))
         completed = await asyncio.gather(*[asyncio.create_task(t) for t in tasks], return_exceptions=True)
         model_summary = {"model": model, "attempts": []}
         any_ok = False
@@ -1301,4 +1231,3 @@ async def diagnose(full: bool = Query(False, description="If true, run extended 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
-
