@@ -37,19 +37,11 @@ try:
 except Exception:
     PIL_AVAILABLE = False
 
-# OCR structured extractor - REMOVED
-# try:
-#     from ocr_extractor import ocr_extract_bytes, to_readable_summary
-#     OCR_AVAILABLE = True
-# except Exception:
-#     OCR_AVAILABLE = False
-
 # LangChain / LLM imports (keep as you used)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
 from langchain.agents import create_tool_calling_agent, AgentExecutor
-from langchain_core.messages import HumanMessage
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -89,16 +81,9 @@ class LLMWithFallback:
         self.temperature = temperature
         self.slow_keys_log = defaultdict(list)
         self.failing_keys_log = defaultdict(int)
+        self.current_llm = None  # placeholder for actual ChatGoogleGenerativeAI instance
 
-    def _get_llm_instance(self, model_name=None):
-        if model_name:
-            for key in self.keys:
-                try:
-                    return ChatGoogleGenerativeAI(model=model_name, temperature=self.temperature, google_api_key=key)
-                except Exception:
-                    pass
-            raise RuntimeError(f"Failed to initialize LLM for model: {model_name}")
-
+    def _get_llm_instance(self):
         last_error = None
         for model in self.models:
             for key in self.keys:
@@ -108,6 +93,7 @@ class LLMWithFallback:
                         temperature=self.temperature,
                         google_api_key=key
                     )
+                    self.current_llm = llm_instance
                     return llm_instance
                 except Exception as e:
                     last_error = e
@@ -118,14 +104,15 @@ class LLMWithFallback:
                     time.sleep(0.5)
         raise RuntimeError(f"All models/keys failed. Last error: {last_error}")
 
-    def invoke(self, prompt, model_name=None):
-        llm_instance = self._get_llm_instance(model_name)
-        return llm_instance.invoke(prompt)
-
     # Required by LangChain agent
     def bind_tools(self, tools):
         llm_instance = self._get_llm_instance()
         return llm_instance.bind_tools(tools)
+
+    # Keep .invoke interface
+    def invoke(self, prompt):
+        llm_instance = self._get_llm_instance()
+        return llm_instance.invoke(prompt)
 
 
 LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", 240))
@@ -161,6 +148,8 @@ def parse_keys_and_types(raw_questions: str):
     type_map = {key: type_map_def.get(t.lower(), str) for key, t in matches}
     keys_list = [k for k, _ in matches]
     return keys_list, type_map
+
+
 
 
 # -----------------------------
@@ -340,7 +329,7 @@ def scrape_url_to_dataframe(url: str) -> Dict[str, Any]:
 '''
 
 
-def write_and_run_temp_python(code: str, injected_pickle: str = None, timeout: int = 60, questions: List[str] = None) -> Dict[str, Any]:
+def write_and_run_temp_python(code: str, injected_pickle: str = None, timeout: int = 60) -> Dict[str, Any]:
     """
     Write a temp python file which:
       - provides a safe environment (imports)
@@ -421,12 +410,6 @@ def plot_to_base64(max_bytes=100000):
     script_lines.extend(preamble)
     script_lines.append(helper)
     script_lines.append(SCRAPE_FUNC)
-    # expose questions to the executed code if provided
-    if questions is not None:
-        try:
-            script_lines.append("questions = " + json.dumps(list(questions), ensure_ascii=False) + "\n")
-        except Exception:
-            script_lines.append("questions = []\n")
     script_lines.append("\nresults = {}\n")
     script_lines.append(code)
     # ensure results printed as json
@@ -537,17 +520,7 @@ def run_agent_safely(llm_input: str) -> Dict:
 
         parsed = clean_llm_output(raw_out)
         if "error" in parsed:
-            # Try a last-ditch coercion: locate outermost braces in raw text
-            try:
-                start = raw_out.find("{")
-                end = raw_out.rfind("}")
-                if start != -1 and end != -1 and end > start:
-                    coerced = json.loads(raw_out[start:end+1])
-                    parsed = coerced
-                else:
-                    return parsed
-            except Exception:
-                return parsed
+            return parsed
 
         if not isinstance(parsed, dict) or "code" not in parsed or "questions" not in parsed:
             return {"error": f"Invalid agent response format: {parsed}"}
@@ -573,7 +546,7 @@ def run_agent_safely(llm_input: str) -> Dict:
             # Make sure agent's code can reference df/data: we will inject the pickle loader in the temp script
 
         # Execute code in temp python script
-        exec_result = write_and_run_temp_python(code, injected_pickle=pickle_path, timeout=LLM_TIMEOUT_SECONDS, questions=questions)
+        exec_result = write_and_run_temp_python(code, injected_pickle=pickle_path, timeout=LLM_TIMEOUT_SECONDS)
         if exec_result.get("status") != "success":
             return {"error": f"Execution failed: {exec_result.get('message', exec_result)}", "raw": exec_result.get("raw")}
 
@@ -622,9 +595,6 @@ async def analyze_data(request: Request):
         pickle_path = None
         df_preview = ""
         dataset_uploaded = False
-        llm_input = None # New variable to hold multimodal input
-
-        is_image_upload = False
 
         if data_file:
             dataset_uploaded = True
@@ -632,164 +602,55 @@ async def analyze_data(request: Request):
             content = await data_file.read()
             from io import BytesIO
 
-            if filename.endswith((".csv", ".xlsx", ".xls", ".parquet", ".json")):
-                # This block handles tabular data files
-                if filename.endswith(".csv"):
-                    df = pd.read_csv(BytesIO(content))
-                elif filename.endswith((".xlsx", ".xls")):
-                    df = pd.read_excel(BytesIO(content))
-                elif filename.endswith(".parquet"):
-                    df = pd.read_parquet(BytesIO(content))
-                elif filename.endswith(".json"):
-                    try:
-                        df = pd.read_json(BytesIO(content))
-                    except ValueError:
-                        df = pd.DataFrame(json.loads(content.decode("utf-8")))
-
-                # Pickle for injection
-                temp_pkl = tempfile.NamedTemporaryFile(suffix=".pkl", delete=False)
-                temp_pkl.close()
-                df.to_pickle(temp_pkl.name)
-                pickle_path = temp_pkl.name
-
-                df_preview = (
-                    f"\n\nThe uploaded dataset has {len(df)} rows and {len(df.columns)} columns.\n"
-                    f"Columns: {', '.join(df.columns.astype(str))}\n"
-                    f"First rows:\n{df.head(5).to_markdown(index=False)}\n"
-                )
-
-                llm_rules = (
-                    "Rules:\n"
-                    "1) You have access to a pandas DataFrame called `df` and its dictionary form `data`.\n"
-                    "2) DO NOT call scrape_url_to_dataframe() or fetch any external data.\n"
-                    "3) Use only the uploaded dataset for answering questions.\n"
-                    "4) Produce a final JSON object with keys:\n"
-                    '   - "questions": [ ... original question strings ... ]\n'
-                    '   - "code": "..."  (Python code that fills `results` with exact question strings as keys)\n'
-                    "5) For plots: use plot_to_base64() helper to return base64 image data under 100kB.\n"
-                )
-                llm_input = (
-                    f"{llm_rules}\nQuestions:\n{raw_questions}\n"
-                    f"{df_preview}"
-                    "Respond with the JSON object only."
-                )
-            
-            elif filename.endswith((".png", ".jpg", ".jpeg")):
-                is_image_upload = True
-            
-                # Normalize image type to JPEG if it's PNG
-                mime_type = "image/png" if filename.endswith(".png") else "image/jpeg"
-                if PIL_AVAILABLE and filename.endswith(".png"):
-                    img_buffer = BytesIO()
-                    Image.open(BytesIO(content)).convert('RGB').save(img_buffer, 'JPEG')
-                    content = img_buffer.getvalue()
-                    mime_type = "image/jpeg"  # only override here
-            
-                # Convert image to raw base64 (no prefix)
-                base64_image = base64.b64encode(content).decode('utf-8')
-                questions_text = raw_questions.strip()
-            
-                # Prompt rules for Gemini
-                llm_rules = (
-                    "You are an expert data analyst agent with multimodal capabilities. "
-                    "You will analyze a provided image and generate Python code to answer a series of questions. "
-                    "The image contains all the data you need.\n\n"
-                    "Your response MUST be a single valid JSON object with two keys only: "
-                    "`questions` (a list of the original question strings, verbatim) and "
-                    "`code` (a single string containing runnable Python code).\n\n"
-                    "The Python code must strictly follow this structure:\n"
-                    "1. DATA EXTRACTION: Define a dictionary or list of dictionaries named `extracted_data`, "
-                    "containing every readable data point from the image. Use None for unreadable values. "
-                    "Do not invent or assume any data.\n"
-                    "2. DATAFRAME CREATION: Create a pandas DataFrame named `df` from `extracted_data`.\n"
-                    "3. ANALYSIS: Use `df` to answer all questions.\n"
-                    "4. OUTPUT: Store answers in a dictionary named `results`, with original question strings as keys.\n"
-                    "5. PLOTTING: For questions requiring plots, use matplotlib. Use the provided helper function "
-                    "`plot_to_base64()` to convert plots to base64 strings.\n\n"
-                    "Return ONLY valid JSON with no explanations, no markdown, and no text outside the JSON."
-                )
-            
-                # API key check
-                api_key = os.getenv("gemini_api_3")
-                if not api_key:
-                    raise HTTPException(500, "Gemini API key not found in environment variables.")
-            
-                headers = {"Content-Type": "application/json"}
-            
-                # Gemini expects text + inline_data inside parts (no "type": "image")
-                payload = {
-                    "contents": [
-                        {
-                            "parts": [
-                                {"text": f"{llm_rules}\nQuestions:\n{questions_text}"},
-                                {
-                                    "inline_data": {
-                                        "mime_type": mime_type,
-                                        "data": base64_image,
-                                    }
-                                },
-                            ],
-                        }
-                    ]
-                }
-            
-                api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-            
+            if filename.endswith(".csv"):
+                df = pd.read_csv(BytesIO(content))
+            elif filename.endswith((".xlsx", ".xls")):
+                df = pd.read_excel(BytesIO(content))
+            elif filename.endswith(".parquet"):
+                df = pd.read_parquet(BytesIO(content))
+            elif filename.endswith(".json"):
                 try:
-                    response = requests.post(api_url, headers=headers, json=payload, timeout=LLM_TIMEOUT_SECONDS)
-                    print("✅ Status:", response.status_code)
-                    if not response.ok:
-                        print("❌ Error response text:")
-                        try:
-                            print(json.dumps(response.json(), indent=2))
-                        except Exception:
-                            print(response.text)  # fallback if it's not JSON
-                        response.raise_for_status()
-                    resp_json = response.json()
-                    print("🔎 Raw response JSON:")
-                    print(json.dumps(resp_json, indent=2))
-                    # Collect all text parts from the first candidate
-                    try:
-                        parts = resp_json["candidates"][0]["content"]["parts"]
-                        raw_out = "".join([p.get("text", "") for p in parts if "text" in p])
-                    except (KeyError, IndexError) as e:
-                        raise HTTPException(500, detail=f"Invalid response format: {json.dumps(resp_json)}")
-            
-                except requests.exceptions.RequestException as e:
-                    raise HTTPException(500, detail=f"Failed to call Gemini API: {str(e)}")
-                except (KeyError, IndexError) as e:
-                    raise HTTPException(500, detail=f"Invalid response from Gemini API: {str(e)}")
-            
-                # --- FIX: strip markdown fences before parsing ---
-                raw_clean = raw_out.strip()
-                if raw_clean.startswith("```"):
-                    raw_clean = raw_clean.strip("`")
-                    if raw_clean.lower().startswith("json"):
-                        raw_clean = raw_clean[4:].strip()
-                    if raw_clean.endswith("```"):
-                        raw_clean = raw_clean[:-3].strip()
-            
-                # Parse JSON
+                    df = pd.read_json(BytesIO(content))
+                except ValueError:
+                    df = pd.DataFrame(json.loads(content.decode("utf-8")))
+            elif filename.endswith(".png") or filename.endswith(".jpg") or filename.endswith(".jpeg"):
                 try:
-                    parsed = json.loads(raw_clean)
+                    if PIL_AVAILABLE:
+                        image = Image.open(BytesIO(content))
+                        image = image.convert("RGB")  # ensure RGB format
+                        df = pd.DataFrame({"image": [image]})
+                    else:
+                        raise HTTPException(400, "PIL not available for image processing")
                 except Exception as e:
-                    raise HTTPException(500, detail=f"Could not parse JSON output: {e}")
-            
-                code = parsed["code"]
-                questions = parsed["questions"]
-            
-                # Execute generated code
-                exec_result = write_and_run_temp_python(code=code, questions=questions, timeout=LLM_TIMEOUT_SECONDS)
-                if exec_result.get("status") != "success":
-                    raise HTTPException(500, detail=f"Execution failed: {exec_result.get('message')}")
-            
-                result = exec_result.get("result", {})
-                return JSONResponse(content=result)
+                    raise HTTPException(400, f"Image processing failed: {str(e)}")  
+            else:
+                raise HTTPException(400, f"Unsupported data file type: {filename}")
 
+            # Pickle for injection
+            temp_pkl = tempfile.NamedTemporaryFile(suffix=".pkl", delete=False)
+            temp_pkl.close()
+            df.to_pickle(temp_pkl.name)
+            pickle_path = temp_pkl.name
 
-        
+            df_preview = (
+                f"\n\nThe uploaded dataset has {len(df)} rows and {len(df.columns)} columns.\n"
+                f"Columns: {', '.join(df.columns.astype(str))}\n"
+                f"First rows:\n{df.head(5).to_markdown(index=False)}\n"
+            )
+
+        # Build rules based on data presence
+        if dataset_uploaded:
+            llm_rules = (
+                "Rules:\n"
+                "1) You have access to a pandas DataFrame called `df` and its dictionary form `data`.\n"
+                "2) DO NOT call scrape_url_to_dataframe() or fetch any external data.\n"
+                "3) Use only the uploaded dataset for answering questions.\n"
+                "4) Produce a final JSON object with keys:\n"
+                '   - "questions": [ ... original question strings ... ]\n'
+                '   - "code": "..."  (Python code that fills `results` with exact question strings as keys)\n'
+                "5) For plots: use plot_to_base64() helper to return base64 image data under 100kB.\n"
+            )
         else:
-            # No data file uploaded, assume web scraping is needed
             llm_rules = (
                 "Rules:\n"
                 "1) If you need web data, CALL scrape_url_to_dataframe(url).\n"
@@ -798,75 +659,68 @@ async def analyze_data(request: Request):
                 '   - "code": "..."  (Python code that fills `results` with exact question strings as keys)\n'
                 "3) For plots: use plot_to_base64() helper to return base64 image data under 100kB.\n"
             )
-            llm_input = (
-                f"{llm_rules}\nQuestions:\n{raw_questions}\n"
-                f"{df_preview if df_preview else ''}"
-                "Respond with the JSON object only."
-            )
-            
-        if not is_image_upload:
-            # Run agent
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as ex:
-                # The function to be called must be `run_agent_safely_unified` to handle multimodal input
-                fut = ex.submit(run_agent_safely_unified, llm_input, pickle_path)
-                try:
-                    result = fut.result(timeout=LLM_TIMEOUT_SECONDS)
-                except concurrent.futures.TimeoutError:
-                    raise HTTPException(408, "Processing timeout")
-    
-            if "error" in result:
-                try:
-                    logger.error("Agent error: %s", result.get("error"))
-                    if result.get("raw"):
-                        logger.error("Agent raw output: %s", str(result.get("raw"))[:3000])
-                except Exception:
-                    pass
-                raise HTTPException(500, detail=result["error"])
-    
-            # Post-process key mapping & type casting (robust, generic, with index fallback)
-            if keys_list and type_map:
-                mapped = {}
-                # If result is a dict and all keys match, map by key
-                if isinstance(result, dict) and all(k in result for k in keys_list):
-                    for key in keys_list:
-                        val = result.get(key, None)
-                        caster = type_map.get(key, str)
-                        if isinstance(val, str) and val.startswith("data:image/"):
-                            val = val.split(",", 1)[1] if "," in val else val
-                        try:
-                            mapped[key] = caster(val) if val not in (None, "") else val
-                        except Exception:
-                            mapped[key] = val
-                    result = mapped
-                # If result is a dict and lengths match, map by index (fallback)
-                elif isinstance(result, dict) and len(result) == len(keys_list):
-                    result_values = list(result.values())
-                    for idx, key in enumerate(keys_list):
-                        val = result_values[idx]
-                        caster = type_map.get(key, str)
-                        if isinstance(val, str) and val.startswith("data:image/"):
-                            val = val.split(",", 1)[1] if "," in val else val
-                        try:
-                            mapped[key] = caster(val) if val not in (None, "") else val
-                        except Exception:
-                            mapped[key] = val
-                    result = mapped
-                # If result is a list and length matches, map by index
-                elif isinstance(result, list) and len(result) == len(keys_list):
-                    for idx, key in enumerate(keys_list):
-                        val = result[idx]
-                        caster = type_map.get(key, str)
-                        if isinstance(val, str) and val.startswith("data:image/"):
-                            val = val.split(",", 1)[1] if "," in val else val
-                        try:
-                            mapped[key] = caster(val) if val not in (None, "") else val
-                        except Exception:
-                            mapped[key] = val
-                    result = mapped
-                # Otherwise, do not map, just return the raw result (prevents all 'Answer not found')
-    
-            return JSONResponse(content=result)
+
+        llm_input = (
+            f"{llm_rules}\nQuestions:\n{raw_questions}\n"
+            f"{df_preview if df_preview else ''}"
+            "Respond with the JSON object only."
+        )
+
+        # Run agent
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as ex:
+            fut = ex.submit(run_agent_safely_unified, llm_input, pickle_path)
+            try:
+                result = fut.result(timeout=LLM_TIMEOUT_SECONDS)
+            except concurrent.futures.TimeoutError:
+                raise HTTPException(408, "Processing timeout")
+
+        if "error" in result:
+            raise HTTPException(500, detail=result["error"])
+
+        # Post-process key mapping & type casting (robust, generic, with index fallback)
+        if keys_list and type_map:
+            mapped = {}
+            # If result is a dict and all keys match, map by key
+            if isinstance(result, dict) and all(k in result for k in keys_list):
+                for key in keys_list:
+                    val = result.get(key, None)
+                    caster = type_map.get(key, str)
+                    if isinstance(val, str) and val.startswith("data:image/"):
+                        val = val.split(",", 1)[1] if "," in val else val
+                    try:
+                        mapped[key] = caster(val) if val not in (None, "") else val
+                    except Exception:
+                        mapped[key] = val
+                result = mapped
+            # If result is a dict and lengths match, map by index (fallback)
+            elif isinstance(result, dict) and len(result) == len(keys_list):
+                result_values = list(result.values())
+                for idx, key in enumerate(keys_list):
+                    val = result_values[idx]
+                    caster = type_map.get(key, str)
+                    if isinstance(val, str) and val.startswith("data:image/"):
+                        val = val.split(",", 1)[1] if "," in val else val
+                    try:
+                        mapped[key] = caster(val) if val not in (None, "") else val
+                    except Exception:
+                        mapped[key] = val
+                result = mapped
+            # If result is a list and length matches, map by index
+            elif isinstance(result, list) and len(result) == len(keys_list):
+                for idx, key in enumerate(keys_list):
+                    val = result[idx]
+                    caster = type_map.get(key, str)
+                    if isinstance(val, str) and val.startswith("data:image/"):
+                        val = val.split(",", 1)[1] if "," in val else val
+                    try:
+                        mapped[key] = caster(val) if val not in (None, "") else val
+                    except Exception:
+                        mapped[key] = val
+                result = mapped
+            # Otherwise, do not map, just return the raw result (prevents all 'Answer not found')
+
+        return JSONResponse(content=result)
 
     except HTTPException as he:
         raise he
@@ -887,31 +741,11 @@ def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
         raw_out = ""
         for attempt in range(1, max_retries + 1):
             response = agent_executor.invoke({"input": llm_input}, {"timeout": LLM_TIMEOUT_SECONDS})
-            raw_out = response.get("output") or response.get("final_output") or response.get("text") or response.get("content") or ""
+            raw_out = response.get("output") or response.get("final_output") or response.get("text") or ""
             if raw_out:
                 break
         if not raw_out:
-            # Fallback: call LLM directly without the agent
-            try:
-                direct = llm.invoke(llm_input)
-                # Try to extract text from various response shapes
-                text = None
-                if isinstance(direct, str):
-                    text = direct
-                elif hasattr(direct, "content") and isinstance(direct.content, str):
-                    text = direct.content
-                elif hasattr(direct, "text") and isinstance(direct.text, str):
-                    text = direct.text
-                else:
-                    try:
-                        text = str(direct)
-                    except Exception:
-                        text = None
-                if not text:
-                    return {"error": f"Agent returned no output after {max_retries} attempts"}
-                raw_out = text
-            except Exception as e:
-                return {"error": f"Agent returned no output after {max_retries} attempts; direct call failed: {e}"}
+            return {"error": f"Agent returned no output after {max_retries} attempts"}
 
         parsed = clean_llm_output(raw_out)
         if "error" in parsed:
@@ -936,7 +770,7 @@ def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
                 df.to_pickle(temp_pkl.name)
                 pickle_path = temp_pkl.name
 
-        exec_result = write_and_run_temp_python(code, injected_pickle=pickle_path, timeout=LLM_TIMEOUT_SECONDS, questions=questions)
+        exec_result = write_and_run_temp_python(code, injected_pickle=pickle_path, timeout=LLM_TIMEOUT_SECONDS)
         if exec_result.get("status") != "success":
             return {"error": f"Execution failed: {exec_result.get('message')}", "raw": exec_result.get("raw")}
 
@@ -1220,7 +1054,7 @@ async def check_llm_keys_models():
         # test keys in parallel for this model
         tasks = []
         for key in _GEMINI_KEYS:
-            tasks.append(run_in_thread(_test_gemini_key_model, key, model, ping_text="ping"))
+            tasks.append(run_in_thread(_test_gemini_key_model, key, model, timeout=DIAG_LLM_KEY_TIMEOUT))
         completed = await asyncio.gather(*[asyncio.create_task(t) for t in tasks], return_exceptions=True)
         model_summary = {"model": model, "attempts": []}
         any_ok = False
@@ -1323,3 +1157,4 @@ async def diagnose(full: bool = Query(False, description="If true, run extended 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+
