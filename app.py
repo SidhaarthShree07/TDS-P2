@@ -570,7 +570,6 @@ def run_agent_safely(llm_input: str) -> Dict:
 
 
 from fastapi import Request
-
 @app.post("/api")
 async def analyze_data(request: Request):
     try:
@@ -618,11 +617,22 @@ async def analyze_data(request: Request):
                     if PIL_AVAILABLE:
                         image = Image.open(BytesIO(content))
                         image = image.convert("RGB")  # ensure RGB format
-                        df = pd.DataFrame({"image": [image]})
+                        # OCR: extract text from image
+                        try:
+                            import pytesseract
+                        except ImportError:
+                            raise HTTPException(500, "pytesseract is required for OCR. Please install it.")
+                        text = pytesseract.image_to_string(image)
+                        # Try to parse as CSV if possible, else as plain text
+                        import io
+                        try:
+                            df = pd.read_csv(io.StringIO(text))
+                        except Exception:
+                            df = pd.DataFrame({"ocr_text": [text]})
                     else:
                         raise HTTPException(400, "PIL not available for image processing")
                 except Exception as e:
-                    raise HTTPException(400, f"Image processing failed: {str(e)}")  
+                    raise HTTPException(400, f"Image OCR processing failed: {str(e)}")
             else:
                 raise HTTPException(400, f"Unsupported data file type: {filename}")
 
