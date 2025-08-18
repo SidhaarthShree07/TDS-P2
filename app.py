@@ -94,7 +94,7 @@ class LLMWithFallback:
 
         # Decide which key set to use
         keys_to_use = self.keys
-        if self.call_count > 2 and self.spl_key:
+        if self.call_count > 1 and self.spl_key:
             print(f"--- API Call #{self.call_count}: Switching to special API key. ---")
             keys_to_use = [self.spl_key]
         elif self.call_count > 0:
@@ -117,6 +117,7 @@ class LLMWithFallback:
                         self.slow_keys_log[key].append(model)
                     self.failing_keys_log[key] += 1
                     time.sleep(0.5)
+        print(f"[DEBUG] call_count={self.call_count}, keys_to_use={keys_to_use}")
         raise RuntimeError(f"All models/keys failed. Last error: {last_error}")
 
     # Required by LangChain agent
