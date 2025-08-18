@@ -152,41 +152,42 @@ def parse_keys_and_types(raw_questions: str):
     keys_list = [k for k, _ in matches]
     return keys_list, type_map
 
-def call_aipipe(prompt: str, model: str = "gpt-4.1-nano", timeout: int = 60) -> str:
+def call_aipipe(prompt: str, model: str = "gemini-1.5-flash", timeout: int = 60) -> str:
     """
-    Calls AI Pipe (OpenAI proxy) for chat responses.
+    Calls AI Pipe Gemini API (v1beta).
     Uses AIPIPE_TOKEN from environment.
     """
     api_key = os.getenv("AIPIPE_TOKEN")
     if not api_key:
         raise HTTPException(500, "AI Pipe token not configured. Set AIPIPE_TOKEN.")
 
-    url = "https://aipipe.org/openai/v1/responses"
+    url = f"https://aipipe.org/geminiv1beta/models/{model}:generateContent"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     payload = {
-        "model": model,
-        "input": prompt
+        "contents": [
+            {"parts": [{"text": prompt}]}
+        ]
     }
 
     try:
         resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
         if not resp.ok:
-            raise HTTPException(resp.status_code, f"AI Pipe error: {resp.text}")
+            raise HTTPException(resp.status_code, f"AI Pipe Gemini error: {resp.text}")
         data = resp.json()
-        # Extract assistant text from AI Pipe's OpenAI-style response
-        outputs = data.get("output", [])
-        if not outputs:
-            raise HTTPException(500, f"AI Pipe returned no output: {data}")
-        content = outputs[0].get("content", [])
-        texts = [c.get("text", "") for c in content if "text" in c]
+        candidates = data.get("candidates", [])
+        if not candidates:
+            raise HTTPException(500, f"AI Pipe Gemini returned no candidates: {data}")
+        parts = candidates[0].get("content", {}).get("parts", [])
+        texts = [p.get("text", "") for p in parts if "text" in p]
         return "\n".join(texts).strip()
     except requests.Timeout:
-        raise HTTPException(504, f"AI Pipe timeout after {timeout}s")
+        raise HTTPException(504, f"AI Pipe Gemini timeout after {timeout}s")
     except Exception as e:
-        raise HTTPException(502, f"AI Pipe call failed: {e}")
+        raise HTTPException(502, f"AI Pipe Gemini call failed: {e}")
+
 
 
 
