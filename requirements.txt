@@ -24,5 +24,3 @@ psutil
 httpx
 scikit-learn
 pytesseract
-playwright
-torch

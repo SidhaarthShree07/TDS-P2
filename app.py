@@ -1026,16 +1026,6 @@ def _system_info():
         info["tmp_free_gb"] = round(shutil.disk_usage(tempfile.gettempdir()).free / 1024**3, 2)
     except Exception:
         info["tmp_free_gb"] = None
-    # GPU quick probe (if torch installed)
-    try:
-        import torch
-        info["torch_installed"] = True
-        info["cuda_available"] = torch.cuda.is_available()
-        if torch.cuda.is_available():
-            info["cuda_device_name"] = torch.cuda.get_device_name(0)
-    except Exception:
-        info["torch_installed"] = False
-        info["cuda_available"] = False
     return info
 
 def _temp_write_test():
@@ -1201,19 +1191,6 @@ async def check_duckdb():
     except Exception as e:
         return {"duckdb_error": str(e)}
 
-async def check_playwright():
-    try:
-        from playwright.async_api import async_playwright
-        async with async_playwright() as p:
-            b = await p.chromium.launch(headless=True, args=["--no-sandbox"])
-            page = await b.new_page()
-            await page.goto("about:blank")
-            ua = await page.evaluate("() => navigator.userAgent")
-            await b.close()
-            return {"playwright_ok": True, "ua": ua[:200]}
-    except Exception as e:
-        return {"playwright_error": str(e)}
-
 # ---- Final /diagnose route (concurrent) ----
 from fastapi import Query
 
@@ -1242,7 +1219,6 @@ async def diagnose(full: bool = Query(False, description="If true, run extended 
 
     if full or RUN_LONGER_CHECKS:
         tasks["duckdb"] = asyncio.create_task(check_duckdb())
-        tasks["playwright"] = asyncio.create_task(check_playwright())
 
     # run all concurrently, collect results
     results = {}
