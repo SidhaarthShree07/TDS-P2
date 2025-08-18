@@ -848,34 +848,57 @@ async def analyze_data(request: Request):
 def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
     """
     Runs the LLM agent and executes code.
-    - Retries up to 3 times if agent returns no output or if quota errors (429, quota exceeded, rate limit).
+    - Tries up to 3 API keys (one per attempt) if quota errors occur.
     - If pickle_path is provided, injects that DataFrame directly.
     - If no pickle_path, falls back to scraping when needed.
     """
     try:
-        max_retries = 3
+        max_retries = min(3, len(GEMINI_KEYS))  # up to 3 keys, or less if fewer provided
         raw_out = ""
         quota_error_detected = False
 
-        for attempt in range(1, max_retries + 1):
-            response = agent_executor.invoke({"input": llm_input}, {"timeout": LLM_TIMEOUT_SECONDS})
-            raw_out = response.get("output") or response.get("final_output") or response.get("text") or ""
-            
-            # Normalize to lowercase for keyword detection
-            msg_lower = raw_out.lower() if raw_out else ""
-            quota_error_detected = any(qk in msg_lower for qk in QUOTA_KEYWORDS)
+        for attempt in range(max_retries):
+            key = GEMINI_KEYS[attempt]   # pick a new key each retry
+            model = MODEL_HIERARCHY[0]  # always start with primary model
 
-            if raw_out and not quota_error_detected:
-                # Got valid output, stop retrying
-                break
-            else:
-                logger.warning(f"Attempt {attempt} failed (quota error or empty). Retrying...")
-                time.sleep(1)  # small backoff
+            logger.info(f"🔑 Attempt {attempt+1} using key index {attempt}")
+
+            try:
+                llm = ChatGoogleGenerativeAI(
+                    model=model,
+                    temperature=0,
+                    google_api_key=key
+                )
+                agent = create_tool_calling_agent(llm=llm, tools=[scrape_url_to_dataframe], prompt=prompt)
+                local_executor = AgentExecutor(
+                    agent=agent,
+                    tools=[scrape_url_to_dataframe],
+                    verbose=True,
+                    max_iterations=3,
+                    early_stopping_method="generate",
+                    handle_parsing_errors=True,
+                    return_intermediate_steps=False,
+                )
+
+                response = local_executor.invoke({"input": llm_input}, {"timeout": LLM_TIMEOUT_SECONDS})
+                raw_out = response.get("output") or response.get("final_output") or response.get("text") or ""
+
+                msg_lower = raw_out.lower() if raw_out else ""
+                quota_error_detected = any(qk in msg_lower for qk in QUOTA_KEYWORDS)
+
+                if raw_out and not quota_error_detected:
+                    break  # success!
+
+            except Exception as e:
+                msg = str(e).lower()
+                quota_error_detected = any(qk in msg for qk in QUOTA_KEYWORDS)
+                logger.warning(f"Attempt {attempt+1} failed with error: {msg}")
+                time.sleep(1 * (attempt+1))
 
         if not raw_out:
-            return {"error": f"Agent returned no output after {max_retries} attempts"}
+            return {"error": f"Agent returned no output after {max_retries} attempts with different keys"}
         if quota_error_detected:
-            return {"error": f"Quota/rate-limit error after {max_retries} attempts: {raw_out}"}
+            return {"error": f"Quota/rate-limit error after {max_retries} keys. Last output: {raw_out}"}
 
         parsed = clean_llm_output(raw_out)
         if "error" in parsed:
@@ -887,6 +910,7 @@ def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
         code = parsed["code"]
         questions = parsed["questions"]
 
+        # handle scrape if needed
         if pickle_path is None:
             urls = re.findall(r"scrape_url_to_dataframe\(\s*['\"](.*?)['\"]\s*\)", code)
             if urls:
@@ -913,6 +937,7 @@ def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
         ):
             values = list(results_dict.values())
             output = {q: values[i] for i, q in enumerate(questions)}
+
         return output
 
     except Exception as e:
