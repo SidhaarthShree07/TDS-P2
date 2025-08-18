@@ -688,8 +688,6 @@ async def analyze_data(request: Request):
                 
                 # Convert image to raw base64 (no prefix)
                 base64_image = base64.b64encode(content).decode('utf-8')
-                print(content)
-                print(base64_image)
                 questions_text = raw_questions.strip()
                 
                 # Prompt rules for Gemini
@@ -777,6 +775,7 @@ async def analyze_data(request: Request):
                     raise HTTPException(500, detail=f"Execution failed: {exec_result.get('message')}")
                 
                 result = exec_result.get("result", {})
+                return JSONResponse(content=result)
 
         
         else:
@@ -794,69 +793,70 @@ async def analyze_data(request: Request):
                 f"{df_preview if df_preview else ''}"
                 "Respond with the JSON object only."
             )
-
-        # Run agent
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as ex:
-            # The function to be called must be `run_agent_safely_unified` to handle multimodal input
-            fut = ex.submit(run_agent_safely_unified, llm_input, pickle_path)
-            try:
-                result = fut.result(timeout=LLM_TIMEOUT_SECONDS)
-            except concurrent.futures.TimeoutError:
-                raise HTTPException(408, "Processing timeout")
-
-        if "error" in result:
-            try:
-                logger.error("Agent error: %s", result.get("error"))
-                if result.get("raw"):
-                    logger.error("Agent raw output: %s", str(result.get("raw"))[:3000])
-            except Exception:
-                pass
-            raise HTTPException(500, detail=result["error"])
-
-        # Post-process key mapping & type casting (robust, generic, with index fallback)
-        if keys_list and type_map:
-            mapped = {}
-            # If result is a dict and all keys match, map by key
-            if isinstance(result, dict) and all(k in result for k in keys_list):
-                for key in keys_list:
-                    val = result.get(key, None)
-                    caster = type_map.get(key, str)
-                    if isinstance(val, str) and val.startswith("data:image/"):
-                        val = val.split(",", 1)[1] if "," in val else val
-                    try:
-                        mapped[key] = caster(val) if val not in (None, "") else val
-                    except Exception:
-                        mapped[key] = val
-                result = mapped
-            # If result is a dict and lengths match, map by index (fallback)
-            elif isinstance(result, dict) and len(result) == len(keys_list):
-                result_values = list(result.values())
-                for idx, key in enumerate(keys_list):
-                    val = result_values[idx]
-                    caster = type_map.get(key, str)
-                    if isinstance(val, str) and val.startswith("data:image/"):
-                        val = val.split(",", 1)[1] if "," in val else val
-                    try:
-                        mapped[key] = caster(val) if val not in (None, "") else val
-                    except Exception:
-                        mapped[key] = val
-                result = mapped
-            # If result is a list and length matches, map by index
-            elif isinstance(result, list) and len(result) == len(keys_list):
-                for idx, key in enumerate(keys_list):
-                    val = result[idx]
-                    caster = type_map.get(key, str)
-                    if isinstance(val, str) and val.startswith("data:image/"):
-                        val = val.split(",", 1)[1] if "," in val else val
-                    try:
-                        mapped[key] = caster(val) if val not in (None, "") else val
-                    except Exception:
-                        mapped[key] = val
-                result = mapped
-            # Otherwise, do not map, just return the raw result (prevents all 'Answer not found')
-
-        return JSONResponse(content=result)
+            
+        if not is_image_upload:
+            # Run agent
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as ex:
+                # The function to be called must be `run_agent_safely_unified` to handle multimodal input
+                fut = ex.submit(run_agent_safely_unified, llm_input, pickle_path)
+                try:
+                    result = fut.result(timeout=LLM_TIMEOUT_SECONDS)
+                except concurrent.futures.TimeoutError:
+                    raise HTTPException(408, "Processing timeout")
+    
+            if "error" in result:
+                try:
+                    logger.error("Agent error: %s", result.get("error"))
+                    if result.get("raw"):
+                        logger.error("Agent raw output: %s", str(result.get("raw"))[:3000])
+                except Exception:
+                    pass
+                raise HTTPException(500, detail=result["error"])
+    
+            # Post-process key mapping & type casting (robust, generic, with index fallback)
+            if keys_list and type_map:
+                mapped = {}
+                # If result is a dict and all keys match, map by key
+                if isinstance(result, dict) and all(k in result for k in keys_list):
+                    for key in keys_list:
+                        val = result.get(key, None)
+                        caster = type_map.get(key, str)
+                        if isinstance(val, str) and val.startswith("data:image/"):
+                            val = val.split(",", 1)[1] if "," in val else val
+                        try:
+                            mapped[key] = caster(val) if val not in (None, "") else val
+                        except Exception:
+                            mapped[key] = val
+                    result = mapped
+                # If result is a dict and lengths match, map by index (fallback)
+                elif isinstance(result, dict) and len(result) == len(keys_list):
+                    result_values = list(result.values())
+                    for idx, key in enumerate(keys_list):
+                        val = result_values[idx]
+                        caster = type_map.get(key, str)
+                        if isinstance(val, str) and val.startswith("data:image/"):
+                            val = val.split(",", 1)[1] if "," in val else val
+                        try:
+                            mapped[key] = caster(val) if val not in (None, "") else val
+                        except Exception:
+                            mapped[key] = val
+                    result = mapped
+                # If result is a list and length matches, map by index
+                elif isinstance(result, list) and len(result) == len(keys_list):
+                    for idx, key in enumerate(keys_list):
+                        val = result[idx]
+                        caster = type_map.get(key, str)
+                        if isinstance(val, str) and val.startswith("data:image/"):
+                            val = val.split(",", 1)[1] if "," in val else val
+                        try:
+                            mapped[key] = caster(val) if val not in (None, "") else val
+                        except Exception:
+                            mapped[key] = val
+                    result = mapped
+                # Otherwise, do not map, just return the raw result (prevents all 'Answer not found')
+    
+            return JSONResponse(content=result)
 
     except HTTPException as he:
         raise he
