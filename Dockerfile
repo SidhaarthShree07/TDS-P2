@@ -20,7 +20,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py .
 COPY index.html .
 COPY entrypoint.sh .
-COPY ocr_extractor.py .
 # Copy environment file if it exists
 COPY .env* ./
 
