@@ -668,33 +668,77 @@ async def analyze_data(request: Request):
                     f"{df_preview}"
                     "Respond with the JSON object only."
                 )
+            
 
             elif filename.endswith((".png", ".jpg", ".jpeg")):
                 is_image_upload = True
+                content = await data_file.read()
+                
+                # Use PIL to normalize image type to jpeg if it's png
+                mime_type = "image/jpeg"
+                if PIL_AVAILABLE and filename.endswith(".png"):
+                    img_buffer = BytesIO()
+                    Image.open(BytesIO(content)).convert('RGB').save(img_buffer, 'JPEG')
+                    content = img_buffer.getvalue()
+                
                 base64_image = base64.b64encode(content).decode('utf-8')
-
+                questions_text = raw_questions.strip()
+                
                 llm_rules = (
-                    "You are an expert data analyst agent with multimodal capabilities. Your task is to analyze a provided image and generate Python code to answer a series of questions. The image contains all the data you need.\n"
-                    "\n"
-                    "Your response MUST be a single JSON object containing two keys: `questions` (a list of the original questions) and `code` (a single string of Python code).\n"
-                    "\n"
-                    "The Python code must adhere to the following strict requirements:\n"
-                    "1.  **DATA EXTRACTION:** Start the code by defining a dictionary or list of dictionaries named `extracted_data` that meticulously holds every single data point (e.g., names, labels, values) you can accurately read from the image. Do NOT make up any data. If a value is unreadable, it must be represented as `None`.\n"
-                    "2.  **DATAFRAME CREATION:** Immediately after, create a pandas DataFrame named `df` from this `extracted_data` object.\n"
-                    "3.  **ANALYSIS:** Use the `df` DataFrame to answer all the questions.\n"
-                    "4.  **OUTPUT:** Store all answers in a dictionary named `results`, with the original question strings as keys.\n"
-                    "5.  **PLOTTING:** For any question requiring a plot, use `matplotlib.pyplot` and call the helper function `plot_to_base64()` to return the plot as a base64 string.\n"
-                    "\n"
-                    "DO NOT try to call external tools or import any other libraries besides those strictly needed for the analysis (pandas, numpy, matplotlib, etc.).\n"
-                    "The code must be self-contained and runnable without any external dependencies other than the standard libraries.\n"
+                    "You are an expert data analyst agent with multimodal capabilities. "
+                    "You will analyze a provided image and generate Python code to answer a series of questions. "
+                    "The image contains all the data you need.\n\n"
+                    "Your response MUST be a single valid JSON object with two keys only: "
+                    "`questions` (a list of the original question strings, verbatim) and "
+                    "`code` (a single string containing runnable Python code).\n\n"
+                    "The Python code must strictly follow this structure:\n"
+                    "1. DATA EXTRACTION: Define a dictionary or list of dictionaries named `extracted_data`, "
+                    "containing every readable data point from the image. Use None for unreadable values. "
+                    "Do not invent or assume any data.\n"
+                    "2. DATAFRAME CREATION: Create a pandas DataFrame named `df` from `extracted_data`.\n"
+                    "3. ANALYSIS: Use `df` to answer all questions.\n"
+                    "4. OUTPUT: Store answers in a dictionary named `results`, with original question strings as keys.\n"
+                    "5. PLOTTING: For questions requiring plots, use matplotlib. Use the provided helper function "
+                    "`plot_to_base64()` to convert plots to base64 strings.\n\n"
+                    "Return ONLY valid JSON with no explanations, no markdown, and no text outside the JSON."
                 )
 
-                llm_input = [
-                    HumanMessage(content=[
-                        {"type": "text", "text": f"{llm_rules}\nQuestions:\n{raw_questions}\n\nRespond with the JSON object only."},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                    ])
+                # Corrected format for Gemini API, using inline_data
+                contents = [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": f"{llm_rules}\nQuestions:\n{questions_text}"
+                            },
+                            {
+                                "inline_data": {
+                                    "mime_type": mime_type,
+                                    "data": base64_image
+                                }
+                            }
+                        ]
+                    }
                 ]
+                
+                llm = LLMWithFallback()
+                gemini_vision_model = llm.get_llm_instance(model_name="gemini-pro-vision")
+                
+                response = gemini_vision_model.invoke(contents)
+                raw_out = response.content
+                
+                parsed = clean_llm_output(raw_out)
+                if "error" in parsed:
+                    raise HTTPException(500, detail=parsed["error"])
+                
+                code = parsed["code"]
+                questions = parsed["questions"]
+                
+                exec_result = write_and_run_temp_python(code=code, questions=questions, timeout=LLM_TIMEOUT_SECONDS)
+                if exec_result.get("status") != "success":
+                    raise HTTPException(500, detail=f"Execution failed: {exec_result.get('message')}")
+                
+                result = exec_result.get("result", {})
             else:
                 raise HTTPException(400, f"Unsupported data file type: {filename}")
         
