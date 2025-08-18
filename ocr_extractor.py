@@ -1,4 +1,5 @@
 import os
+import platform
 import json
 from typing import Any, Dict, List, Tuple
 
@@ -26,7 +27,11 @@ def _ensure_tesseract_cmd() -> None:
         pytesseract.pytesseract.tesseract_cmd = env_cmd
         return
 
-    # Common Windows locations
+    # On Linux containers (e.g., Railway Docker), tesseract is in PATH, nothing to do
+    if platform.system().lower() != "windows":
+        return
+
+    # Windows-specific fallbacks
     win_paths = [
         r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
         r"C:\\Program Files (x86)\\Tesseract-OCR\\tesseract.exe",
@@ -314,14 +319,10 @@ def ocr_extract_bytes(image_bytes: bytes, lang: str = "eng") -> Dict[str, Any]:
     """
     Same as ocr_extract, but accepts raw image bytes (useful for FastAPI uploads).
     """
+    from io import BytesIO
     _ensure_tesseract_cmd()
-    img = Image.open(np.frombuffer(image_bytes, dtype=np.uint8))
-    # PIL can accept a file-like object, but frombuffer trick sometimes fails for PNG/JPEG; handle robustly
-    try:
-        img = Image.open(np.frombuffer(image_bytes, dtype=np.uint8))
-    except Exception:
-        from io import BytesIO
-        img = Image.open(BytesIO(image_bytes))
+    # Always open from BytesIO to avoid numpy ndarray mishandling
+    img = Image.open(BytesIO(image_bytes))
     if img.mode != "RGB":
         img = img.convert("RGB")
     processed = ImageOps.autocontrast(ImageOps.grayscale(img)).filter(ImageFilter.SHARPEN)
@@ -385,4 +386,3 @@ if __name__ == "__main__":
         print(json.dumps(result, ensure_ascii=False, indent=2))
         print()
         print(to_readable_summary(result))
-
